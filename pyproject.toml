@@ -13,10 +13,12 @@ dependencies = [
     "av==17.1.0",
     "opencv-python==5.0.0.93",
     "numpy==2.5.3",
+    "loguru==0.7.3",
 ]
 
 [project.optional-dependencies]
-observability = ["loguru==0.7.3"]
+# Compatibilidade com instalações antigas usando .[observability].
+observability = []
 
 [project.scripts]
 go2-env = "go2_env:main"

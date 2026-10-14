@@ -1,100 +1,132 @@
 # Go2 — câmera e teleoperação via WebRTC
 
-Projeto Python para visualizar a câmera do **Unitree Go2**, tirar fotos JPG,
+Aplicação Python para visualizar a câmera do **Unitree Go2**, salvar fotos JPG,
 gravar vídeos MP4/H.264 e enviar comandos de postura e locomoção pelo Wi-Fi
-local do robô. O programa principal é `foto_webrtc/teste_video.py` e utiliza
-Tkinter para a janela, OpenCV para imagens e aiortc/PyAV para vídeo.
+local. Mantém Tkinter, OpenCV, PyAV/aiortc, todas as teclas e as entradas
+históricas, com workers separados e logs correlacionados usando **Loguru**.
 
 ## Pré-requisitos
 
-- Python **3.12** (versão indicada em `.python-version`).
-- Linux com sessão gráfica e Tkinter para executar a interface.
-- Go2 acessível pelo Wi-Fi AP do robô, no endereço `192.168.12.1`.
-- Bibliotecas de sistema para PortAudio, dependência do driver WebRTC.
-- PyAV com o encoder `libx264` para gravar MP4.
+- Python **3.12**, indicado em `.python-version`.
+- Linux com sessão gráfica e Tkinter.
+- `uv` para instalar, executar e gerenciar as dependências Python.
+- Na máquina que controla o robô: Go2 acessível pelo Wi-Fi AP, em `192.168.12.1`.
+- PortAudio para as dependências de áudio do driver, mesmo usando apenas vídeo.
+- Encoder `libx264` na instalação do PyAV.
 
-Em Ubuntu/Debian, instale os pré-requisitos de sistema:
+Para executar a interface e o driver na máquina de controle, instale os
+pré-requisitos de sistema. Em Ubuntu/Debian:
 
 ```bash
 sudo apt update
-sudo apt install python3-venv python3-tk python3-dev portaudio19-dev build-essential libgl1 libglib2.0-0
+sudo apt install python3-tk python3-dev portaudio19-dev build-essential libgl1 libglib2.0-0
 ```
 
-Use os pacotes de sistema correspondentes ao seu Python, caso a distribuição
-forneça outra versão por padrão. Tkinter não é instalado pelo `pip`.
+Use os pacotes correspondentes ao seu Python. Tkinter e PortAudio são
+pré-requisitos nativos e não são gerenciados pelo `uv`.
 
 ## Instalação
 
+Instale o `uv` conforme a [documentação oficial](https://docs.astral.sh/uv/getting-started/installation/).
 Na raiz do repositório:
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip check
+uv sync --locked
+uv pip check
 ```
 
-`pyproject.toml` é a fonte única das dependências diretas, com versões do
-ambiente atual. `requirements.txt` instala o projeto editável com o extra
-`observability`, que inclui Loguru. As dependências transitivas são resolvidas
-pelo pip; este arquivo não é um lock completo do ambiente.
+`uv sync --locked` cria `.venv` e instala o projeto editável com as versões
+registradas em **`uv.lock`**, incluindo dependências transitivas e hashes.
+O Python 3.12 é selecionado por `.python-version`; o `uv` pode baixá-lo se
+necessário. Não é preciso criar ou ativar o ambiente manualmente.
 
-Para instalar apenas o programa atual, sem o extra de observabilidade:
+`pyproject.toml` define as dependências diretas. **Loguru 0.7.3 é obrigatório**.
+`uv.lock` deve ser versionado junto com `pyproject.toml`. O extra vazio
+`observability` permanece como alias de compatibilidade. `requirements.txt`
+foi substituído pelo fluxo de projeto do `uv`.
+
+## Gerenciamento de dependências
 
 ```bash
-python -m pip install -e .
+uv add nome-do-pacote          # adiciona uma dependência
+uv add --dev nome-do-pacote    # adiciona uma ferramenta de desenvolvimento
+uv remove nome-do-pacote      # remove uma dependência
+uv lock                      # atualiza o lock após editar pyproject.toml
+uv lock --check               # verifica se o lock está atualizado
+uv sync --locked              # sincroniza o ambiente com o lock versionado
+uv tree --locked              # exibe a árvore de dependências
 ```
 
-## Configuração
+`uv add` e `uv remove` atualizam a declaração, o lock e o ambiente. Para
+atualizar dependências transitivas compatíveis, use `uv lock --upgrade` e
+depois `uv sync --locked`. As versões diretas estão fixadas com `==`; para
+alterá-las, use `uv add 'nome-do-pacote==nova-versao'`. Revise o diff do lock
+e execute os testes antes de versionar a atualização.
 
-Conecte o notebook ao Wi-Fi AP do Go2 antes de iniciar. O programa usa
-`WebRTCConnectionMethod.LocalAP`; não exige credenciais de conta no código.
-Internet é necessária para instalar dependências, mas não para a captura local.
-Firmware que exigir uma chave AES precisa da configuração descrita na
-[documentação do driver](https://github.com/legion1581/unitree_webrtc_connect#readme).
-O script atual não fornece uma opção de terminal para essa chave.
+Neste workspace, os pré-requisitos nativos ausentes foram extraídos em
+`.venv/system`, sem modificar o sistema. Para usar esse ambiente preparado:
 
-Os ajustes atuais ficam nas constantes de `foto_webrtc/teste_video.py`:
+```bash
+source .venv/env-local.sh
+```
 
-| Constante | Padrão | Uso |
+Esse script local configura as bibliotecas de Tk/PortAudio e ALSA. Ele não
+substitui `uv sync` nem faz parte da instalação em outra máquina. A presença
+do robô não é necessária para sincronizar dependências ou executar os testes.
+
+## Execução e configuração
+
+Na máquina de controle, conecte ao Wi-Fi AP do robô antes de executar:
+
+```bash
+uv run --locked go2-env --nivel-log DEBUG
+# Entradas equivalentes:
+uv run --locked python -m go2_env
+uv run --locked python foto_webrtc/teste_video.py
+```
+
+Teste apenas a interface, sem conexão ou comandos:
+
+```bash
+uv run --locked go2-env --testar-janela
+```
+
+Consulte todas as opções com `uv run --locked go2-env --help`. Exemplo:
+
+```bash
+uv run --locked go2-env --pasta-logs logs --pasta-saida capturas_go2 --timeout-pedido 5 --publicar-hz 20
+```
+
+O padrão de captura permanece `foto_webrtc/capturas_go2/fotos/` e
+`foto_webrtc/capturas_go2/videos/`. Os logs ficam em `logs/`, relativos ao
+diretório de execução. Caminhos personalizados são definidos pelas opções acima.
+
+Os ajustes imutáveis ficam em `foto_webrtc/config.py` (`Config`). As constantes
+históricas de `teste_video.py` ainda definem os ganhos, atrasos de postura e
+padrões usados pela CLI.
+
+| Ajuste | Padrão | Uso |
 | --- | --- | --- |
-| `GANHO_LINEAR` | `0.3` | Velocidade linear na API Move, em m/s |
-| `GANHO_ANGULAR` | `0.5` | Velocidade de giro, em rad/s |
-| `PUBLICAR_HZ` | `20.0` | Frequência de envio de movimento |
-| `TIMEOUT_PEDIDO_S` | `5.0` | Espera por resposta de postura/modo |
-| `LIMITE_FRAME_ANTIGO_S` | `2.0` | Validade de uma imagem para captura |
-| `PASTA_SAIDA` | `capturas_go2` ao lado do script | Fotos e vídeos locais |
+| `linear_gain` | `0.3` | Velocidade linear, m/s |
+| `angular_gain` | `0.5` | Velocidade angular, rad/s |
+| `publish_hz` | `20.0` | Cadência máxima dos comandos Move |
+| `request_timeout` | `5.0 s` | Prazo para resposta da API |
+| `connect_timeout` | `30.0 s` | Prazo da conexão WebRTC |
+| `disconnect_timeout` | `5.0 s` | Prazo da desconexão |
+| `input_timeout` | `0.3 s` | Watchdog do heartbeat do teclado |
+| `frame_timeout` | `2.0 s` | Validade de frames para foto/gravação |
+| `shutdown_timeout` | `10.0 s` | Prazo antes de reportar encerramento lento |
 
-Não coloque senhas, tokens ou chaves no código. `.env`, arquivos de chaves,
-configurações privadas, logs e capturas são excluídos pelo `.gitignore`.
-O programa atual não carrega arquivos `.env` automaticamente.
+Firmware que exige AES pode usar a variável **`UNITREE_AES_128_KEY`**. A chave
+é passada ao driver sem ser registrada como configuração nos logs. Confira a
+[documentação de autenticação do driver](https://github.com/legion1581/unitree_webrtc_connect#readme).
+Não coloque chaves no código. O programa não carrega `.env` automaticamente.
 
-## Execução
-
-O caminho original continua disponível:
-
-```bash
-python foto_webrtc/teste_video.py
-```
-
-Após instalar o projeto, também é possível usar:
-
-```bash
-go2-env
-# ou
-python -m go2_env
-```
-
-Teste apenas a janela, sem conectar nem enviar comandos ao robô:
-
-```bash
-python foto_webrtc/teste_video.py --testar-janela
-```
+## Controle
 
 Clique na janela para dar foco ao teclado. Pressione **U** e aguarde a ação
-antes de locomover. Uma resposta favorável da API não comprova a postura
-física; observe o robô antes de andar.
+antes de locomover. Código zero é aceitação pela API; observe a estabilidade
+física do robô antes de andar.
 
 | Tecla | Ação |
 | --- | --- |
@@ -109,65 +141,193 @@ física; observe o robô antes de andar.
 | V | Iniciar ou finalizar MP4 |
 | Esc | Parar, finalizar gravação e encerrar |
 
-As capturas ficam em `foto_webrtc/capturas_go2/fotos/` e
-`foto_webrtc/capturas_go2/videos/` na instalação editável. Soltar as teclas ou
-tirar o foco da janela zera a locomoção. Essa parada depende do programa e da
-conexão; não substitui uma parada física de emergência.
+Soltar as teclas, perder o foco ou perder o heartbeat da GUI solicita velocidade
+zero. Posturas suspendem a locomoção enquanto estão em andamento; depois de
+J/K, é necessário U/R aceito para liberá-la. Outra ação durante uma postura é
+rejeitada e registrada. Não há repetição automática de posturas ou reconexão
+que retome movimentos anteriores. Espaço interrompe a velocidade; não cancela
+uma postura que já foi aceita pelo robô.
+
+A parada depende do programa e da conexão; não substitui uma parada física de
+emergência. Falha, rejeição ou timeout de um Move ativo suspende a locomoção,
+invalida comandos antigos e solicita zero. Respostas tardias ficam nos logs e
+não reativam o controle.
+
+## Arquitetura e padrões
+
+| Componente | Thread | Responsabilidade |
+| --- | --- | --- |
+| `JanelaCamera` | principal | Tkinter, teclado e exibição de PPM já processado |
+| `LocomotionWorker` | `go2-locomotion` | Converte snapshots do teclado em velocidades na cadência configurada |
+| `RobotWorker` | `go2-rtc` | Event loop asyncio exclusivo, estado de postura e envio serializado ao driver |
+| `CaptureWorker` | `go2-capture` | Aguarda frames pela ponte thread-safe do loop RTC; entrega frames sem processamento |
+| `VideoProcessor` | `go2-video` | OpenCV, redimensionamento, JPG e codificação/finalização MP4 |
+| coordenador de saída | `go2-shutdown` | Aguarda workers sem executar `join()` em callbacks Tk |
+
+```mermaid
+flowchart LR
+    GUI["Tkinter / thread principal"] -->|"fila: teclado recente"| Commands["Thread de locomoção"]
+    Commands -->|"fila: último Move"| RTC["Thread WebRTC / asyncio"]
+    GUI -->|"filas: ação e parada prioritária"| RTC
+    RTC <-->|"WebRTC: pedidos e respostas"| Robot["Unitree Go2"]
+    RTC -->|"fila: trilha + ponte recv thread-safe"| Capture["Thread de captura"]
+    Capture -->|"fila: frames recentes"| Video["Thread OpenCV / PyAV"]
+    GUI -->|"fila: foto / gravação"| Video
+    Video -->|"fila: preview PPM"| GUI
+    RTC -->|"filas: snapshots de estado"| GUI
+    RTC -->|"fila: estado do controle"| Commands
+```
+
+- **Command:** mensagens imutáveis com IDs e parâmetros, sem acesso a widgets.
+- **Adapter:** `RobotTransport` permite substituir o WebRTC por um transporte
+  simulado nos testes. `WebRTCTransport` encapsula o protocolo e a correlação.
+- **Producer/Consumer:** filas `queue.Queue` limitadas e operações sem bloqueio
+  nos produtores. Teclado, preview e velocidade usam o item mais recente;
+  ações discretas usam FIFO e rejeição explícita quando a fila está cheia.
+- **Estado explícito:** snapshots imutáveis de conexão, modo, postura e permissão para
+  locomover. Somente `RobotWorker` altera o estado do robô.
+- **Facade:** `Application` conecta componentes e coordena início e encerramento.
+- **Template Method:** `Worker.run()` padroniza logs e exceções; cada componente
+  implementa sua tarefa em `work()`.
+
+O driver, o canal SCTP e `track.recv()` pertencem ao loop da thread RTC.
+A captura usa `asyncio.run_coroutine_threadsafe`; não compartilha objetos
+aiortc entre event loops. Conversão de imagem, escrita de fotos e encoding não
+ocorrem na GUI nem no loop RTC. O handshake HTTP bloqueante usa um executor
+separado, com timeouts de conexão/leitura e sem proxies para o IP local.
+
+Frames e velocidades antigos são descartados para limitar memória e latência.
+Uma geração no mailbox invalida movimentos pendentes ao parar ou solicitar
+postura; o lock protege a validação junto com o envio. A fila de parada é
+prioritária e não depende de espaço na fila de ações.
+
+## Observabilidade e diagnóstico de movimento
+
+O console mostra ações e falhas; os arquivos **JSONL** mantêm DEBUG, incluindo
+cada Move enviado e sua resposta. Os sinks do Loguru usam `enqueue=True`,
+rotação de **10 MB**, retenção de **14 dias** e `diagnose=False`. As mensagens
+pendentes são drenadas com `logger.complete()` antes de fechar os sinks, conforme
+[a API do Loguru](https://loguru.readthedocs.io/en/stable/api/logger.html).
+Falhas das bibliotecas via `logging` e avisos `errors/add_error/rm_error` do
+robô também entram no arquivo.
+
+Os campos ficam em `record.extra`:
+
+| Campo | Significado |
+| --- | --- |
+| `session_id`, `component`, `event` | Sessão, componente e etapa do fluxo |
+| `command_id`, `parent_command_id` | Comando e vínculo de consultas/paradas auxiliares com a ação |
+| `request_id`, `topic`, `api_id` | Identidade usada no protocolo WebRTC |
+| `parameters` | Parâmetros reais enviados, como `x/y/z` |
+| `queue_ms` | Tempo entre criação e envio |
+| `duration_ms` | Tempo desde o envio até resposta/timeout/cancelamento |
+| `status`, `response` | Resultado e envelope de resposta recebido |
+
+`duration_ms` mede a espera da API, **não a duração física do movimento**.
+`accepted` significa resposta com código zero, sem comprovar deslocamento.
+`rejected`, `malformed`, `timeout`, `late_response` e `send_failed` distinguem as
+falhas. Pedidos restantes são registrados como `cancelled` ao desconectar;
+`superseded` indica substituição no limite do registro pendente.
+
+Para o problema de falta de movimento:
+
+1. Confira `connected` e eventuais exceções de autenticação/conexão. Compare
+   `driver_version`, estado do canal, API e tópico registrados.
+2. Pressione **M** e confira `robot_state.mode`. U/R consulta e confirma
+   `normal` antes de enviar postura quando necessário. A troca de modo espera
+   uma margem de 5 segundos e consulta novamente.
+3. Se aparece `movement_inhibited`, confira `connected`, `busy`, `mode` e a
+   mensagem de estado; o comando não foi enviado porque o controle está suspenso.
+4. Filtre `command_sent` e `command_result` pelo mesmo `command_id/request_id`.
+   Em `timeout`, o envio não recebeu resposta no prazo: a ação pode ter chegado
+   ao robô. Em `rejected`, inspecione o código em `response` e os `robot_error`.
+5. Se Move aparece como `accepted`, mas o robô não anda, os logs confirmam a
+   resposta da API. Investigue postura real, modo/firmware e outros clientes de
+   controle; não conclua que houve deslocamento somente pelo código zero.
+
+O registro pendente do adapter é limitado a **256** pedidos e guarda até **64**
+pedidos expirados para reconhecer respostas tardias. Move usa o envelope de
+requisição do driver, com IDs únicos, mas não cria Futures no resolver do SDK.
+Isso evita acumulação e `InvalidStateError` quando respostas chegam depois de
+um timeout. O listener adicional preserva o processamento normal do driver.
+O buffer SCTP também é verificado antes de enviar velocidades não nulas.
+
+## Captura e encerramento
+
+MP4 mantém a resolução do stream, sem áudio, com linha do tempo iniciada em
+zero e precisão de 1/30 s. Frames acima de 30 fps são amostrados; lacunas de
+tempo são preservadas quando frames são descartados. O indicador REC aparece
+somente no preview. É possível tirar foto durante uma gravação.
+
+Ao fechar, pressionar Esc ou receber SIGINT/SIGTERM, a aplicação marca o Event
+de encerramento, cancela ações assíncronas, tenta enviar zero, fecha o MP4 com
+flush do encoder, desliga vídeo e desconecta. Os workers não são daemon e são
+aguardados antes de destruir o Tk e drenar os logs. Exceções em workers ou
+callbacks da interface provocam a mesma parada coordenada.
+
+Se um recurso nativo demorar além do prazo de saída, a GUI informa a demora e
+os logs listam as threads pendentes. Python não pode matar uma thread presa
+em I/O nativo com segurança; a aplicação aguarda seu retorno. Encerrar o
+processo à força pode impedir o fechamento do MP4 e o envio de parada.
 
 ## Estrutura
 
 ```text
-.
-├── foto_webrtc/
-│   ├── __init__.py
-│   ├── teste_video.py       # programa principal: câmera, postura, foto e vídeo
-│   ├── foto_webrtc.py       # exemplo de captura de fotos
-│   ├── correcao_imagem.py   # exemplo de correção fisheye
-│   ├── teste.py             # teleoperação anterior
-│   └── testemov.py          # demonstração que movimenta o robô automaticamente
-├── src/go2_env/             # entradas go2-env e python -m go2_env
-├── tests/                  # verificações sem robô nem janela
-├── .gitignore
-├── .python-version
-├── pyproject.toml
-├── requirements.txt
-└── README.md
+foto_webrtc/
+├── teste_video.py      # CLI e constantes históricas
+├── application.py      # Facade e ciclo de vida
+├── gui.py              # View Tkinter
+├── config.py           # configuração imutável
+├── models.py           # mensagens Command e snapshots
+├── channels.py         # filas, prioridade e invalidação
+├── commands.py         # worker de locomoção e watchdog
+├── robot.py            # estado e worker RTC
+├── transport.py        # Adapter WebRTC e respostas correlacionadas
+├── signaling.py        # handshake HTTP com timeout
+├── video.py            # captura, OpenCV, JPG e MP4
+├── workers.py          # ciclo de vida comum das threads
+├── observability.py    # Loguru, JSONL e logs de bibliotecas
+├── foto_webrtc.py      # exemplo histórico de fotos
+├── correcao_imagem.py  # exemplo histórico de fisheye
+├── teste.py            # teleoperação anterior
+└── testemov.py         # demonstração com movimentos automáticos
+src/go2_env/            # go2-env e python -m go2_env
+tests/                  # protocolo, concorrência, GUI, vídeo, logs e CLI
+pyproject.toml          # declaração de dependências e empacotamento
+uv.lock                 # resolução versionada das dependências
+.python-version         # Python usado pelo uv
 ```
 
-Os caminhos históricos foram mantidos para preservar a execução existente.
-Os dois pacotes são declarados explicitamente no build; ambientes virtuais,
-capturas e pastas privadas não são incluídos no pacote.
+Os exemplos históricos continuam disponíveis. `testemov.py` move o robô
+automaticamente; não faz parte da suíte de testes nem usa a nova arquitetura.
 
-## Validação e diagnóstico
+## Validação
 
 ```bash
-python -m unittest discover -s tests -v
-python -m compileall -q src foto_webrtc tests
-go2-env --help
-python -m pip check
+uv lock --check
+uv sync --locked --check
+uv run --locked python -m unittest discover -s tests -v
+uv run --locked python -m compileall -q src foto_webrtc tests
+uv run --locked go2-env --help
+uv pip check
 ```
 
-Essas verificações não conectam ao Go2 e não validam a locomoção física.
-`testemov.py` é uma demonstração com ações automáticas; não é um teste unitário.
+Os testes usam transportes simulados e frames sintéticos. Testam rejeições,
+timeouts/respostas tardias, prioridade de parada, watchdog, afinidade de
+threads, falhas, encerramento, logs e arquivos JPG/MP4 reais. Os testes de GUI
+requerem Tkinter e `DISPLAY` e são ignorados quando não há sessão gráfica.
+Podem ser executados com um display virtual instalado:
 
-- **Janela não abre:** execute em uma sessão gráfica local, confira Tkinter e
-  teste `--testar-janela`. Uma sessão sem acesso a `DISPLAY` não abre a interface.
-- **Sem vídeo:** confira o Wi-Fi, a conexão WebRTC e se outro aplicativo está
-  usando a câmera. O terminal avisa quando faltam imagens recentes.
-- **Sem movimento:** consulte o modo com M e acompanhe as respostas de U/R.
-  Após deitar/amortecer, a locomoção fica suspensa até levantar/recuperar.
-- **MP4 incompleto:** finalize com V ou Esc; encerrar o processo à força pode
-  impedir o fechamento do arquivo.
+```bash
+xvfb-run -a uv run --locked python -m unittest discover -s tests -v
+```
 
-O Loguru está disponível no extra `observability`. A refatoração com threads e
-logs correlacionados ainda não está integrada ao programa atual; os protótipos
-locais ficam fora do versionamento. O programa atual imprime diagnósticos de
-postura/modo, mas não correlaciona as respostas de cada comando Move.
+Nenhum teste da suíte conecta ao Go2 ou comprova locomoção física. Em campo,
+observe as respostas de M/U antes de andar, faça movimentos breves e confira
+os registros. Valide fotos, MP4 e saída com Esc durante uma gravação.
 
 ## Versionamento
 
-Antes de publicar, revise `git status`, `git diff --cached` e `git ls-files`.
-O `.gitignore` preserva os arquivos locais no disco e impede sua inclusão
-acidental no repositório. Não use `git add -f` para adicionar dados privados.
-Este preparo cria apenas o repositório e o commit locais; não configura um
-remote nem executa push.
+`.gitignore` exclui ambientes virtuais, configuração privada, logs e capturas.
+Revise `git status` e `git diff` antes de publicar. Não force a inclusão de dados
+privados. Esta implementação não configura remote, cria commit ou executa push.

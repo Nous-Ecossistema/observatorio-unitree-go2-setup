@@ -10,8 +10,9 @@ from unittest.mock import patch
 
 class ProjectTests(unittest.TestCase):
     def test_import_does_not_open_gui_or_connect(self):
-        with patch("tkinter.Tk", side_effect=AssertionError("GUI durante import")):
+        with patch.dict(sys.modules, {"tkinter": None, "unitree_webrtc_connect": None}):
             module = importlib.import_module("foto_webrtc.teste_video")
+            importlib.reload(module)
         self.assertTrue(callable(module.cli))
 
     def test_help_does_not_open_gui(self):
@@ -19,7 +20,7 @@ class ProjectTests(unittest.TestCase):
 
         output = io.StringIO()
         with patch.object(sys, "argv", ["go2-env", "--help"]), patch(
-            "tkinter.Tk", side_effect=AssertionError("GUI durante --help")
+            "foto_webrtc.teste_video.JanelaCamera", side_effect=AssertionError("GUI durante --help")
         ), contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as result:
             cli()
         self.assertEqual(result.exception.code, 0)

@@ -1,3 +1,0 @@
-# Dependências e versões são definidas apenas em pyproject.toml.
-# Instala o projeto editável e o extra opcional de observabilidade (Loguru).
--e .[observability]
