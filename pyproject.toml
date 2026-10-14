@@ -1,0 +1,30 @@
+[project]
+name = "go2-env"
+version = "0.1.0"
+description = "Captura de fotos, vídeo e teleoperação do Unitree Go2 via WebRTC no Wi-Fi local"
+readme = "README.md"
+authors = [
+    { name = "Lais" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "unitree-webrtc-connect==2.2.0",
+    "aiortc==1.15.0",
+    "av==17.1.0",
+    "opencv-python==5.0.0.93",
+    "numpy==2.5.3",
+]
+
+[project.optional-dependencies]
+observability = ["loguru==0.7.3"]
+
+[project.scripts]
+go2-env = "go2_env:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["go2_env", "foto_webrtc"]
+package-dir = { go2_env = "src/go2_env", foto_webrtc = "foto_webrtc" }
