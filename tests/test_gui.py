@@ -45,6 +45,22 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(self.window.pressionadas)
         self.window.on_action.assert_called_once_with("Parar")
 
+    def test_arrow_and_letter_are_held_and_released_independently(self):
+        for keysym in ("Up", "w"):
+            self.window._pressionar(SimpleNamespace(keysym=keysym))
+        self.assertEqual(self.window.pressionadas, {"up", "w"})
+        self.window._soltar(SimpleNamespace(keysym="Up"))
+        self.window.root.update_idletasks()
+        self.assertEqual(self.window.pressionadas, {"w"})
+
+    def test_posture_clears_all_movement_keys_including_arrows(self):
+        self.window.on_action = Mock()
+        for keysym in ("Up", "Down", "Left", "Right", "w", "q"):
+            self.window._pressionar(SimpleNamespace(keysym=keysym))
+        self.window._pressionar(SimpleNamespace(keysym="u"))
+        self.assertEqual(self.window.pressionadas, {"u"})
+        self.window.on_action.assert_called_once_with("StandUp")
+
     def test_close_is_idempotent(self):
         self.window.on_close = Mock()
         self.window.fechar()

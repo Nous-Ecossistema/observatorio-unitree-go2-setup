@@ -73,6 +73,9 @@ class FakeTransport:
         await asyncio.sleep(self.connect_delay)
         put_latest(self.tracks, FakeTrack())
 
+    def set_motion_mode(self, mode):
+        self.motion_mode = mode
+
     def send(self, command, wait_response=False):
         self.calls.append((command, threading.current_thread().name))
         if command.name == "Move" and any(command.parameter.values()) and self.rejected_move:
@@ -133,6 +136,43 @@ class QueueTests(unittest.TestCase):
             stop.set()
             worker.join(1)
         self.assertFalse(worker.is_alive())
+
+    def test_arrow_keys_move_and_aliases_do_not_double_speed(self):
+        config = Config(publish_hz=100)
+        for keys, expected in [
+            ({"up", "w"}, (0.3, 0, 0)), ({"down"}, (-0.3, 0, 0)),
+            ({"left", "a"}, (0, 0.3, 0)), ({"right"}, (0, -0.3, 0)),
+            ({"up", "right", "q"}, (0.3, -0.3, 0.5)),
+        ]:
+            with self.subTest(keys=keys):
+                stop, inputs, states, bus = threading.Event(), Queue(1), Queue(1), CommandMailbox()
+                put_latest(inputs, InputSnapshot(frozenset(keys)))
+                put_latest(states, RobotState(connected=True, allowed=True))
+                worker = LocomotionWorker(config, stop, inputs, states, bus)
+                worker.start()
+                try:
+                    deadline = time.monotonic() + 1
+                    command = None
+                    while time.monotonic() < deadline:
+                        command = bus.take()
+                        if command is not None:
+                            break
+                        time.sleep(0.002)
+                    self.assertIsNotNone(command)
+                    self.assertEqual(command.parameter, dict(zip(("x", "y", "z"), expected)))
+                    put_latest(inputs, InputSnapshot())
+                    deadline = time.monotonic() + 1
+                    while time.monotonic() < deadline:
+                        command = bus.take()
+                        if command is not None and not any(command.parameter.values()):
+                            break
+                        time.sleep(0.002)
+                    self.assertIsNotNone(command)
+                    self.assertFalse(any(command.parameter.values()))
+                finally:
+                    stop.set()
+                    worker.join(1)
+                self.assertFalse(worker.is_alive())
 
 
 class LifecycleTests(unittest.TestCase):

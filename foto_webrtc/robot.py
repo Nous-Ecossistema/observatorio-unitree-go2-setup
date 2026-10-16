@@ -13,6 +13,9 @@ from .transport import WebRTCTransport, is_recoverable_connection_error
 from .workers import Worker
 
 
+SUPPORTED_MOTION_MODES = frozenset(("normal", "mcf"))
+
+
 class RobotWorker(Worker):
     def __init__(self, config, stop_event, mailbox, tracks, ui_states, command_states,
                  transport_factory=WebRTCTransport):
@@ -89,6 +92,7 @@ class RobotWorker(Worker):
 
         response = await self._request(command or Command("Consultar", parent_command_id=parent_id))
         if response is None:
+            self.transport.set_motion_mode(None)
             self._state(mode=None)
             return None
         try:
@@ -99,6 +103,7 @@ class RobotWorker(Worker):
         except (TypeError, ValueError, KeyError):
             self.log.bind(event="invalid_mode", response=response).warning("Resposta de modo inválida")
             mode = None
+        self.transport.set_motion_mode(mode)
         self._state(mode=mode)
         return mode
 
@@ -108,13 +113,13 @@ class RobotWorker(Worker):
         try:
             if command.name == "Consultar":
                 mode = await self._mode(command)
-                self._state(allowed=allowed_before and mode == "normal")
+                self._state(allowed=allowed_before and mode in SUPPORTED_MOTION_MODES)
                 return
-            if self.state.mode != "normal":
+            if self.state.mode not in SUPPORTED_MOTION_MODES:
                 mode = await self._mode(parent_id=command.command_id)
                 if mode is None:
                     return
-                if mode != "normal":
+                if mode not in SUPPORTED_MOTION_MODES:
                     if await self._request(Command("ModoNormal", (("name", "normal"),),
                                                   parent_command_id=command.command_id)) is None:
                         return

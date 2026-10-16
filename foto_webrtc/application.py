@@ -7,7 +7,7 @@ from threading import Event, Thread
 from loguru import logger
 
 from .channels import CommandMailbox, get_latest, put_latest
-from .commands import LocomotionWorker
+from .commands import MOVEMENT_KEYS, LocomotionWorker
 from .models import Command, InputSnapshot, RobotState, VideoState
 from .robot import RobotWorker
 from .video import CaptureWorker, VideoProcessor
@@ -88,7 +88,7 @@ class Application:
             previous = self.robot_state
             self.robot_state = get_latest(self.ui_states, self.robot_state)
             if not self.robot_state.connected or not previous.connected:
-                self.window.pressionadas.difference_update("wsadqe")
+                self.window.pressionadas.difference_update(MOVEMENT_KEYS)
             if hasattr(self.window, "set_connection_state"):
                 self.window.set_connection_state(self.robot_state.connection_state)
             put_latest(self.inputs, InputSnapshot(frozenset(self.window.pressionadas),
@@ -102,7 +102,7 @@ class Application:
             camera = "OK" if self.frame_ts and time.monotonic() - self.frame_ts < self.config.frame_timeout else "sem imagens recentes"
             if not self.robot_state.connected:
                 camera = "offline"
-            self.window.status.set(f"{self.robot_state.connection_state.value} | {self.robot_state.message} | Câmera: {camera} | {self.video_state.message}")
+            self.window.status.set(f"{self.robot_state.connection_state.value} | Modo: {self.robot_state.mode or 'desconhecido'} | {self.robot_state.message} | Câmera: {camera} | {self.video_state.message}")
         self.window.root.after(30, self._tick)
 
     def request_shutdown(self):

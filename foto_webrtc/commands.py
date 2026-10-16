@@ -9,6 +9,11 @@ from .models import Command, InputSnapshot, RobotState
 from .workers import Worker
 
 
+MOVEMENT_KEYS = {key: key for key in "wsadqe"} | {
+    "up": "w", "down": "s", "left": "a", "right": "d",
+}
+
+
 class LocomotionWorker(Worker):
     def __init__(self, config, stop_event, inputs, states, mailbox):
         super().__init__("go2-locomotion", stop_event)
@@ -28,7 +33,7 @@ class LocomotionWorker(Worker):
             fresh = now - snapshot.timestamp < self.config.input_timeout
             permitted = state.connected and state.allowed and not state.busy
             current = snapshot.generation == generation
-            keys = snapshot.keys & {"w", "s", "a", "d", "q", "e"}
+            keys = {MOVEMENT_KEYS[key] for key in snapshot.keys if key in MOVEMENT_KEYS}
             if keys and not permitted and not denied:
                 logger.bind(component="commands", event="movement_inhibited",
                             mode=state.mode, busy=state.busy, connected=state.connected,

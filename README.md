@@ -85,6 +85,20 @@ uv run --locked python -m go2_env
 uv run --locked python foto_webrtc/teste_video.py
 ```
 
+Os mesmos comandos estão disponíveis pelo `Makefile`:
+
+```bash
+make install
+make run
+make run ARGS="--nivel-log DEBUG"
+make window
+make diagnostico
+```
+
+`make diagnostico` conecta ao Go2 e consulta somente o modo atual; não envia
+comandos de postura nem de movimento. Compartilhe a saída completa para
+investigar falhas de comunicação da API.
+
 Teste apenas a interface, sem conexão ou comandos:
 
 ```bash
@@ -147,8 +161,8 @@ física do robô antes de andar.
 
 | Tecla | Ação |
 | --- | --- |
-| W / S | Frente / trás enquanto segura |
-| A / D | Deslocamento lateral |
+| ↑ / ↓ ou W / S | Frente / trás enquanto segura |
+| ← / → ou A / D | Deslocamento lateral enquanto segura |
 | Q / E | Giro |
 | Espaço | Parar |
 | U / J / R | Levantar / deitar / recuperar |
@@ -165,6 +179,10 @@ J/K, é necessário U/R aceito para liberá-la. Outra ação durante uma postura
 rejeitada e registrada. Não há repetição automática de posturas ou reconexão
 que retome movimentos anteriores. Espaço interrompe a velocidade; não cancela
 uma postura que já foi aceita pelo robô.
+
+Os modos `normal` e `mcf` são aceitos. Em `mcf`, o programa usa a tabela
+`SPORT_CMD_MCF` do driver e mantém esse modo, sem forçar uma troca para `normal`.
+A consulta de modo não libera a locomoção: continua sendo necessário U/R aceito.
 
 A parada depende do programa e da conexão; não substitui uma parada física de
 emergência. Falha, rejeição ou timeout de um Move ativo suspende a locomoção,
@@ -251,14 +269,18 @@ Para o problema de falta de movimento:
 
 1. Confira `connected` e eventuais exceções de autenticação/conexão. Compare
    `driver_version`, estado do canal, API e tópico registrados.
-2. Pressione **M** e confira `robot_state.mode`. U/R consulta e confirma
-   `normal` antes de enviar postura quando necessário. A troca de modo espera
-   uma margem de 5 segundos e consulta novamente.
+2. Pressione **M** e confira `robot_state.mode` e o modo exibido na janela.
+   `normal` e `mcf` permitem comandos de postura; `mcf` é preservado. Para
+   outros modos, U/R consulta e solicita `normal` antes da postura, espera
+   uma margem de 5 segundos e consulta novamente para confirmar a troca.
 3. Se aparece `movement_inhibited`, confira `connected`, `busy`, `mode` e a
    mensagem de estado; o comando não foi enviado porque o controle está suspenso.
 4. Filtre `command_sent` e `command_result` pelo mesmo `command_id/request_id`.
-   Em `timeout`, o envio não recebeu resposta no prazo: a ação pode ter chegado
-   ao robô. Em `rejected`, inspecione o código em `response` e os `robot_error`.
+   Em `timeout`, o programa não reconheceu uma resposta válida no prazo: a ação
+   pode ter chegado ao robô. Em `rejected`, inspecione o código em `response`
+   e os `robot_error`. O tópico de resposta (`response_topic`) termina em
+   `/response`, enquanto o envio (`topic`) termina em `/request`; o adapter
+   valida essa correspondência junto com o ID do pedido e a API.
 5. Se Move aparece como `accepted`, mas o robô não anda, os logs confirmam a
    resposta da API. Investigue postura real, modo/firmware e outros clientes de
    controle; não conclua que houve deslocamento somente pelo código zero.

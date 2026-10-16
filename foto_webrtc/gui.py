@@ -2,6 +2,7 @@
 
 import tkinter as tk
 
+from .commands import MOVEMENT_KEYS
 from .models import ConnectionState
 
 
@@ -23,7 +24,7 @@ class JanelaCamera:
         self.reconnect_button.pack()
         self.preview = tk.Label(self.root, bg="#202020", fg="white", text="Aguardando imagens da câmera...")
         self.preview.pack(fill="both", expand=True)
-        tk.Label(self.root, text="Segure W/S: frente/trás | A/D: lateral | Q/E: giro | Espaço: parar\n"
+        tk.Label(self.root, text="Segure ↑/↓ ou W/S: frente/trás | ←/→ ou A/D: lateral | Q/E: giro | Espaço: parar\n"
                  "U: levantar | J: deitar | R: recuperar | H: aceno | K: amortecer | M: modo\n"
                  "P: foto | V: vídeo | F5: reconectar | Esc: sair").pack()
         self.root.bind("<KeyPress>", self._pressionar)
@@ -54,7 +55,7 @@ class JanelaCamera:
                        "h": "Hello", "k": "Damp", "m": "Consultar", "p": "Foto", "v": "Video"}
             if tecla in actions:
                 if tecla in "ujrhkm":
-                    self.pressionadas.difference_update("wsadqe")
+                    self.pressionadas.difference_update(MOVEMENT_KEYS)
                 self.on_action(actions[tecla])
 
     def _soltar(self, evento):

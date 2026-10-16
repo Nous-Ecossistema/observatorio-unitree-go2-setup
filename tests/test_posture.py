@@ -17,6 +17,9 @@ class PostureTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.commands = []
 
+            def set_motion_mode(self, mode):
+                self.motion_mode = mode
+
             def send(self, command, wait_response=False):
                 self.commands.append(command)
                 future = asyncio.get_running_loop().create_future()
@@ -87,3 +90,28 @@ class PostureTests(unittest.IsolatedAsyncioTestCase):
         await worker._posture(Command("StandUp"))
         self.assertEqual([c.name for c in worker.transport.commands], ["Consultar"])
         self.assertFalse(worker.state.allowed)
+
+    async def test_mcf_sends_posture_without_switching_to_normal(self):
+        for action in ("StandUp", "RecoveryStand", "StandDown", "Damp", "Hello"):
+            with self.subTest(action=action):
+                worker = self.worker([{"data": {"data": '{"form":"0","name":"mcf"}'}}, {}])
+                worker.state = RobotState(connected=True, allowed=False, mode=None)
+                await worker._posture(Command(action))
+                self.assertEqual([c.name for c in worker.transport.commands], ["Consultar", action])
+                self.assertEqual(worker.transport.motion_mode, "mcf")
+                self.assertEqual(worker.state.mode, "mcf")
+                self.assertEqual(worker.state.allowed, action in ("StandUp", "RecoveryStand"))
+
+    async def test_mcf_query_preserves_permission_but_does_not_enable_movement(self):
+        for allowed in (True, False):
+            worker = self.worker([{"data": {"data": '{"name":"mcf"}'}}])
+            worker.state = RobotState(connected=True, allowed=allowed, mode="mcf")
+            await worker._posture(Command("Consultar"))
+            self.assertEqual(worker.state.allowed, allowed)
+
+    async def test_rejected_mcf_posture_keeps_movement_suspended(self):
+        worker = self.worker([{"data": {"data": '{"name":"mcf"}'}}, None])
+        worker.state = RobotState(connected=True, allowed=False, mode=None)
+        await worker._posture(Command("StandUp"))
+        self.assertFalse(worker.state.allowed)
+        self.assertFalse(worker.state.busy)
