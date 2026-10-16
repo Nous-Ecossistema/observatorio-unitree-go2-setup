@@ -30,3 +30,22 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["go2_env", "foto_webrtc"]
 package-dir = { go2_env = "src/go2_env", foto_webrtc = "foto_webrtc" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".venv",
+    "venv",
+    "env",
+    "lib",
+    "lib64",
+    ".git",
+    "__pycache__",
+    "build",
+    "dist"
+]

@@ -2,6 +2,7 @@
 
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 from uuid import uuid4
 
@@ -32,13 +33,21 @@ class InputSnapshot:
     generation: int = 0
 
 
+class ConnectionState(str, Enum):
+    CONNECTING = "Conectando"
+    CONNECTED = "Conectado"
+    DISCONNECTED = "Desconectado"
+    ERROR = "Erro"
+
+
 @dataclass(frozen=True)
 class RobotState:
     connected: bool = False
     busy: bool = False
     allowed: bool = False
     mode: str | None = None
-    message: str = "Conectando ao Go2..."
+    message: str = "Desconectado. Modo offline"
+    connection_state: ConnectionState = ConnectionState.DISCONNECTED
 
 
 @dataclass(frozen=True)

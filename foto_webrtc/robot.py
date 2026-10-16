@@ -3,13 +3,13 @@
 import asyncio
 import time
 from dataclasses import replace
-from threading import Event
+from threading import Event, Lock
 
 from loguru import logger
 
-from .channels import put_latest
-from .models import Command, RobotState
-from .transport import WebRTCTransport
+from .channels import get_latest, put_latest
+from .models import Command, ConnectionState, RobotState
+from .transport import WebRTCTransport, is_recoverable_connection_error
 from .workers import Worker
 
 
@@ -23,14 +23,23 @@ class RobotWorker(Worker):
         self.state = RobotState()
         self.loop = None
         self.ready = Event()
+        self.reconnect_requested = Event()
+        self.reconnect_requested.set()  # uma tentativa inicial, sem retry automático
+        self._reconnect_lock = Lock()
+        self._attempt_active = False
+        self.connection_generation = 0
+        self._receive_tasks = set()
         self.log = logger.bind(component="robot")
 
     def _state(self, **changes):
         self.state = replace(self.state, **changes)
+        if not self.state.connected:
+            self.state = replace(self.state, allowed=False)
         put_latest(self.ui_states, self.state)
         put_latest(self.command_states, self.state)
         self.log.bind(event="robot_state", connected=self.state.connected,
-                      busy=self.state.busy, allowed=self.state.allowed, mode=self.state.mode
+                      busy=self.state.busy, allowed=self.state.allowed, mode=self.state.mode,
+                      connection_state=self.state.connection_state.value
                       ).info("{}", self.state.message)
 
     def _failure(self, command, status):
@@ -42,10 +51,29 @@ class RobotWorker(Worker):
     def work(self):
         asyncio.run(self._run())
 
+    def request_reconnect(self):
+        """Chamável pela GUI: sinaliza o worker existente sem criar uma thread."""
+        with self._reconnect_lock:
+            if (self.stop_event.is_set() or self._attempt_active or self.ready.is_set()
+                    or self.reconnect_requested.is_set()):
+                return False
+            self.reconnect_requested.set()
+        self.log.bind(event="reconnect_requested").info("Reconexão manual solicitada")
+        return True
+
     def receive_frame(self, track):
         """Ponte thread-safe; recv() continua no loop que criou o track."""
+        generation = self.connection_generation
+
         async def receive():
-            return await track.recv()
+            if not self.ready.is_set() or generation != self.connection_generation:
+                raise ConnectionError("Sessão RTC da câmera encerrada")
+            task = asyncio.current_task()
+            self._receive_tasks.add(task)
+            try:
+                return await track.recv()
+            finally:
+                self._receive_tasks.discard(task)
 
         if not self.ready.is_set() or self.loop is None or self.loop.is_closed():
             raise ConnectionError("Loop RTC indisponível")
@@ -105,7 +133,7 @@ class RobotWorker(Worker):
         except asyncio.CancelledError:
             self._state(allowed=False)
             raise
-        except Exception:
+        except BufferError:
             self._state(allowed=False, mode=None)
             self.log.bind(event="posture_failed", command_id=command.command_id,
                           command=command.name).exception("Falha de postura; locomoção suspensa")
@@ -115,7 +143,43 @@ class RobotWorker(Worker):
 
     async def _run(self):
         self.loop = asyncio.get_running_loop()
-        self.transport = self.transport_factory(self.config, self.tracks, self._failure)
+        try:
+            while not self.stop_event.is_set():
+                if not self.reconnect_requested.is_set():
+                    await asyncio.sleep(0.02)
+                    continue
+                with self._reconnect_lock:
+                    self.reconnect_requested.clear()
+                    self._attempt_active = True
+                self.connection_generation += 1
+                self.mailbox.reset("nova tentativa de conexão")
+                self._state(connected=False, allowed=False, busy=False, mode=None,
+                            connection_state=ConnectionState.CONNECTING,
+                            message="Conectando ao Go2...")
+                self._was_connected = False
+                try:
+                    self.transport = self.transport_factory(self.config, self.tracks, self._failure)
+                    await self._session()
+                except Exception as error:
+                    if not is_recoverable_connection_error(error):
+                        raise
+                    status = ConnectionState.DISCONNECTED if self._was_connected else ConnectionState.ERROR
+                    self._state(connected=False, allowed=False, busy=False, mode=None,
+                                connection_state=status,
+                                message=f"{status.value}: {error}. Modo offline; reconecte manualmente")
+                    self.log.bind(event="connection_recoverable", error_type=type(error).__name__,
+                                  attempt=self.connection_generation).warning(
+                                      "Comunicação indisponível; interface mantida em modo offline: {}", error)
+                finally:
+                    with self._reconnect_lock:
+                        self._attempt_active = False
+        finally:
+            self.ready.clear()
+            self.reconnect_requested.clear()
+            self._state(connected=False, allowed=False, busy=False, mode=None,
+                        connection_state=ConnectionState.DISCONNECTED, message="Desconectado")
+
+    async def _session(self):
         connection = asyncio.create_task(self.transport.connect())
         posture = None
         try:
@@ -125,10 +189,15 @@ class RobotWorker(Worker):
                 return
             await connection
             self.ready.set()
-            self._state(connected=True, message="Conectado. U: levantar; M: consultar modo")
+            self._was_connected = True
+            self._state(connected=True, allowed=False, connection_state=ConnectionState.CONNECTED,
+                        message="Conectado. U: levantar; M: consultar modo")
             posture = asyncio.create_task(self._posture(Command("Consultar")))
             while not self.stop_event.is_set():
                 self.transport.tick()
+                if posture is not None and posture.done():
+                    posture.result()  # erros críticos/da comunicação não são silenciados
+                    posture = None
                 command = self.mailbox.take()
                 if command is not None:
                     if command.name == "Move":
@@ -138,7 +207,7 @@ class RobotWorker(Worker):
                         if not nonzero or (self.state.allowed and not self.state.busy and valid):
                             try:
                                 self.mailbox.dispatch_move(command, self.transport.send)
-                            except Exception:
+                            except BufferError:
                                 self.log.bind(event="movement_send_failed", command_id=command.command_id,
                                               parameters=command.parameter).exception("Falha ao enviar Move")
                                 self._state(allowed=False, message="Falha no envio. Verifique conexão e modo")
@@ -156,7 +225,17 @@ class RobotWorker(Worker):
                         posture = asyncio.create_task(self._posture(command))
                 await asyncio.sleep(0.005)
         finally:
+            was_connected = self.state.connected
             self.ready.clear()
+            self._state(connected=False, allowed=False, busy=False, mode=None,
+                        connection_state=ConnectionState.DISCONNECTED,
+                        message="Desconectado. Fechando sessão WebRTC")
+            self.mailbox.reset("conexão indisponível")
+            receives = list(self._receive_tasks)
+            for task in receives:
+                task.cancel()
+            if receives:
+                await asyncio.gather(*receives, return_exceptions=True)
             if not connection.done():
                 connection.cancel()
             await asyncio.gather(connection, return_exceptions=True)
@@ -164,12 +243,21 @@ class RobotWorker(Worker):
                 posture.cancel()
                 await asyncio.gather(posture, return_exceptions=True)
             # Último escritor do driver envia zero antes de desconectar.
-            if self.state.connected:
+            if was_connected:
                 try:
                     self.transport.send(Command.move())
                 except Exception:
                     self.log.bind(event="shutdown_stop_failed").exception("Não foi possível enviar a parada final")
             try:
                 await self.transport.disconnect()
+            except Exception as error:
+                if not is_recoverable_connection_error(error):
+                    raise
+                self.log.bind(event="disconnect_recoverable", error_type=type(error).__name__
+                              ).warning("Falha recuperável no fechamento da comunicação: {}", error)
             finally:
-                self._state(connected=False, allowed=False, busy=False, message="Desconectado")
+                get_latest(self.tracks)
+                self.mailbox.reset("sessão WebRTC encerrada")
+                self._state(connected=False, allowed=False, busy=False, mode=None,
+                            connection_state=ConnectionState.DISCONNECTED,
+                            message="Desconectado. Modo offline; reconecte manualmente")

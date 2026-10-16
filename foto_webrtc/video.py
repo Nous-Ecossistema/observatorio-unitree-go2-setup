@@ -1,7 +1,7 @@
 """Captura e processamento independentes. OpenCV/PyAV ficam fora do Tk."""
 
 import time
-from concurrent.futures import TimeoutError
+from concurrent.futures import CancelledError, TimeoutError
 from datetime import datetime
 from fractions import Fraction
 from queue import Empty
@@ -9,7 +9,7 @@ from queue import Empty
 from loguru import logger
 
 from .channels import get_latest, put_latest
-from .models import Preview, VideoFrame, VideoState
+from .models import ConnectionState, Preview, VideoFrame, VideoState
 from .workers import Worker
 
 
@@ -32,9 +32,14 @@ class CaptureWorker(Worker):
             except Empty:
                 continue
             future = None
+            generation = self.robot.connection_generation
             try:
                 while not self.stop_event.is_set():
+                    if generation != self.robot.connection_generation:
+                        break
                     if not self.robot.ready.wait(0.1):
+                        if self.robot.state.connection_state != ConnectionState.CONNECTING:
+                            break
                         continue
                     future = self.robot.receive_frame(track)
                     while not self.stop_event.is_set():
@@ -53,7 +58,7 @@ class CaptureWorker(Worker):
                             logger.bind(component="video", event="frames_dropped", count=dropped
                                         ).debug("Frames antigos descartados para manter baixa latência")
                     put_latest(self.frames, VideoFrame(frame))
-            except MediaStreamError:
+            except (MediaStreamError, ConnectionError, CancelledError):
                 logger.bind(component="video", event="stream_ended").warning("Fluxo de vídeo encerrado")
             except Exception:
                 if not self.stop_event.is_set():

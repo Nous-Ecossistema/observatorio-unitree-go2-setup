@@ -18,6 +18,20 @@ from loguru import logger
 from .channels import put_latest
 
 
+def is_recoverable_connection_error(error):
+    """Falhas esperadas de rede/sinalização; bugs e dependências ausentes são críticos."""
+    from requests.exceptions import ConnectionError as HTTPConnectionError, HTTPError, Timeout
+    from unitree_webrtc_connect.unitree_auth import (
+        DataChannelTimeoutError, LocalSignalingPortError, NoSdpAnswerError, RobotBusyError,
+    )
+
+    return isinstance(error, (ConnectionError, TimeoutError, HTTPConnectionError, HTTPError,
+                             Timeout, DataChannelTimeoutError, LocalSignalingPortError,
+                             NoSdpAnswerError, RobotBusyError)) or (
+        isinstance(error, OSError) and not isinstance(error, (FileNotFoundError, PermissionError,
+                                                            IsADirectoryError, NotADirectoryError)))
+
+
 class RobotTransport(Protocol):
     async def connect(self): ...
     def send(self, command, wait_response=False): ...
