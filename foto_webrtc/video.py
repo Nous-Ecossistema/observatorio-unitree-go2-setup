@@ -195,9 +195,10 @@ class VideoProcessor(Worker):
 
         image = self.image.copy()
         height, width = image.shape[:2]
-        scale = min(max(self.size[0], 1) / width, max(self.size[1], 1) / height, 1.0)
-        if scale < 1:
-            image = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))))
+        scale = min(max(self.size[0], 1) / width, max(self.size[1], 1) / height)
+        if scale != 1:
+            image = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))),
+                               interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
         if self.container is not None:
             seconds = int(time.monotonic() - self.video_start)
             cv2.putText(image, f"REC {seconds // 60:02d}:{seconds % 60:02d} | V: parar",
@@ -211,6 +212,7 @@ class VideoProcessor(Worker):
         self._status("Aguardando câmera")
         try:
             while not self.stop_event.is_set():
+                previous_size = self.size
                 self.size = get_latest(self.sizes, self.size)
                 for _ in range(8):
                     try:
@@ -227,6 +229,8 @@ class VideoProcessor(Worker):
                     if self.container is not None and not self._fresh():
                         self.log.bind(event="recording_stale_frame").warning("Sem frames recentes; finalizando MP4")
                         self._stop_video()
+                    if self.image is not None and self.size != previous_size:
+                        self._preview()
                     continue
                 packet = get_latest(self.frames, packet)
                 if packet.frame is None:

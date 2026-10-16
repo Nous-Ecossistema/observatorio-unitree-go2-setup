@@ -155,9 +155,16 @@ Não coloque chaves no código. O programa não carrega `.env` automaticamente.
 
 ## Controle
 
-Clique na janela para dar foco ao teclado. Pressione **U** e aguarde a ação
-antes de locomover. Código zero é aceitação pela API; observe a estabilidade
+Clique na janela para dar foco ao teclado. Clique em **Levantar** ou pressione
+**U** e aguarde o indicador **PRONTO PARA ANDAR** antes de locomover.
+Código zero é aceitação pela API; observe a estabilidade
 física do robô antes de andar.
+
+A câmera ocupa uma área independente dos controles. O frame fica centralizado
+e se ajusta ao espaço disponível, preservando a proporção e todas as bordas.
+Ao maximizar ou reduzir a janela, a prévia acompanha o tamanho; fotos e MP4
+mantêm a resolução original. Conexão, permissão de locomoção e captura aparecem
+em áreas separadas. Os botões de postura ficam desabilitados durante uma ação.
 
 | Tecla | Ação |
 | --- | --- |
@@ -176,7 +183,9 @@ física do robô antes de andar.
 Soltar as teclas, perder o foco ou perder o heartbeat da GUI solicita velocidade
 zero. Posturas suspendem a locomoção enquanto estão em andamento; depois de
 J/K, é necessário U/R aceito para liberá-la. Outra ação durante uma postura é
-rejeitada e registrada. Não há repetição automática de posturas ou reconexão
+rejeitada antes de entrar na fila, sem gerar outra parada. A soltura das teclas
+usa uma margem de 40 ms para filtrar os eventos de repetição do teclado no X11.
+Não há repetição automática de posturas ou reconexão
 que retome movimentos anteriores. Espaço interrompe a velocidade; não cancela
 uma postura que já foi aceita pelo robô.
 
@@ -275,6 +284,9 @@ Para o problema de falta de movimento:
    uma margem de 5 segundos e consulta novamente para confirmar a troca.
 3. Se aparece `movement_inhibited`, confira `connected`, `busy`, `mode` e a
    mensagem de estado; o comando não foi enviado porque o controle está suspenso.
+   `movement_started` no console registra o início de uma solicitação de
+   velocidade pelo teclado. Se apenas Move com `x/y/z` iguais a zero foi
+   enviado, o robô recebeu paradas, sem solicitação de deslocamento.
 4. Filtre `command_sent` e `command_result` pelo mesmo `command_id/request_id`.
    Em `timeout`, o programa não reconheceu uma resposta válida no prazo: a ação
    pode ter chegado ao robô. Em `rejected`, inspecione o código em `response`

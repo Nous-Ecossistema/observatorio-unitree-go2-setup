@@ -224,6 +224,42 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(len(nonzero), 1)
         self.assertFalse(any(calls[nonzero[0] + 1].parameter.values()))
 
+    def test_busy_action_is_rejected_without_sending_extra_stop_or_changing_generation(self):
+        from dataclasses import replace
+
+        app = Application(self.config, self.window, FakeTransport)
+        app.robot.ready.set()
+        app.robot.state = replace(app.robot.state, connected=True, busy=True)
+        generation = app.mailbox.generation
+        self.assertFalse(app.action("Hello"))
+        self.assertEqual(app.mailbox.generation, generation)
+        self.assertIsNone(app.mailbox.take())
+
+    def test_second_action_is_rejected_while_first_is_still_queued(self):
+        from dataclasses import replace
+
+        app = Application(self.config, self.window, FakeTransport)
+        app.robot.ready.set()
+        app.robot.state = replace(app.robot.state, connected=True)
+        self.assertTrue(app.action("StandUp"))
+        generation = app.mailbox.generation
+        self.assertFalse(app.action("Hello"))
+        self.assertEqual(app.mailbox.generation, generation)
+        self.assertEqual(app.mailbox.actions.qsize(), 1)
+        self.assertEqual(app.mailbox.actions.get_nowait().name, "StandUp")
+
+    def test_arrow_drives_after_posture_finishes_and_stops_on_release(self):
+        app = Application(self.config, self.window, FakeTransport)
+        self.window.root.after(60, lambda: app.action("StandUp"))
+        self.window.root.after(130, lambda: self.window.pressionadas.add("up"))
+        self.window.root.after(240, lambda: self.window.pressionadas.clear())
+        self.window.root.after(350, self.window.on_close)
+        app.run()
+        calls = [command for command, _ in FakeTransport.instances[0].calls]
+        moving = [i for i, c in enumerate(calls) if c.name == "Move" and c.parameter.get("x") == 0.3]
+        self.assertTrue(moving)
+        self.assertTrue(any(c.name == "Move" and not any(c.parameter.values()) for c in calls[moving[-1] + 1:]))
+
     def test_worker_exception_stops_application_and_closes_resources(self):
         class BrokenTransport(FakeTransport):
             async def connect(self):

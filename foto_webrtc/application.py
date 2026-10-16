@@ -74,6 +74,10 @@ class Application:
                 logger.bind(event="offline_command_blocked", component="commands", command=name
                             ).warning("Comando bloqueado em modo offline: {}", name)
                 return False
+            if self.robot.state.busy or not self.mailbox.actions.empty():
+                logger.bind(event="action_busy", component="commands", command=name).warning(
+                    "Ação rejeitada: aguarde a ação atual terminar")
+                return False
             return self.mailbox.action(name)
 
     def _tick(self):
@@ -102,7 +106,10 @@ class Application:
             camera = "OK" if self.frame_ts and time.monotonic() - self.frame_ts < self.config.frame_timeout else "sem imagens recentes"
             if not self.robot_state.connected:
                 camera = "offline"
-            self.window.status.set(f"{self.robot_state.connection_state.value} | Modo: {self.robot_state.mode or 'desconhecido'} | {self.robot_state.message} | Câmera: {camera} | {self.video_state.message}")
+            if hasattr(self.window, "atualizar_estado"):
+                self.window.atualizar_estado(self.robot_state, camera, self.video_state)
+            else:
+                self.window.status.set(f"{self.robot_state.connection_state.value} | Modo: {self.robot_state.mode or 'desconhecido'} | {self.robot_state.message} | Câmera: {camera} | {self.video_state.message}")
         self.window.root.after(30, self._tick)
 
     def request_shutdown(self):

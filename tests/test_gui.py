@@ -2,10 +2,76 @@
 
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+
+
+class KeyboardTests(unittest.TestCase):
+    """Timers Tcl reais, sem criar janela nem exigir servidor gráfico."""
+
+    def setUp(self):
+        import tkinter as tk
+        from foto_webrtc.gui import JanelaCamera
+
+        self.window = JanelaCamera.__new__(JanelaCamera)
+        self.window.root = tk.Tcl()
+        self.window.pressionadas = set()
+        self.window.solturas = {}
+        self.window.fechada = False
+        self.window.on_action = Mock()
+        self.addCleanup(self.cleanup_timers)
+
+    def cleanup_timers(self):
+        for timer in self.window.solturas.values():
+            self.window.root.after_cancel(timer)
+
+    def test_idle_between_repeat_release_and_press_does_not_repeat_posture(self):
+        event = SimpleNamespace(keysym="h")
+        self.window._pressionar(event)
+        for _ in range(5):
+            self.window._soltar(event)
+            self.window.root.update_idletasks()
+            self.window._pressionar(event)
+        self.window.on_action.assert_called_once_with("Hello")
+        self.assertFalse(self.window.solturas)
+
+    def test_arrow_release_waits_for_repeat_and_preserves_other_held_key(self):
+        for key in ("Up", "w"):
+            self.window._pressionar(SimpleNamespace(keysym=key))
+        self.window._soltar(SimpleNamespace(keysym="Up"))
+        self.window.root.update_idletasks()
+        self.assertEqual(self.window.pressionadas, {"up", "w"})
+        time.sleep(0.06)
+        self.window.root.update()
+        self.assertEqual(self.window.pressionadas, {"w"})
+
+    def test_physical_release_allows_next_explicit_posture(self):
+        event = SimpleNamespace(keysym="u")
+        self.window._pressionar(event)
+        self.window._soltar(event)
+        time.sleep(0.06)
+        self.window.root.update()
+        self.window._pressionar(event)
+        self.assertEqual(self.window.on_action.call_count, 2)
+
+    def test_state_indicator_and_buttons_follow_locomotion_gate(self):
+        import tkinter as tk
+        from foto_webrtc.models import RobotState, VideoState
+
+        for field in ("connection", "status", "media_status", "movement"):
+            setattr(self.window, field, tk.StringVar(master=self.window.root))
+        self.window.movement_label = Mock()
+        self.window.robot_buttons = [Mock()]
+        for connected, busy, allowed, text in ((False, False, False, "SEM CONEXÃO"),
+                (True, False, False, "LEVANTAR"), (True, True, False, "AÇÃO EM ANDAMENTO"),
+                (True, False, True, "PRONTO PARA ANDAR")):
+            self.window.atualizar_estado(RobotState(connected=connected, busy=busy, allowed=allowed), "OK", VideoState())
+            self.assertIn(text, self.window.movement.get())
+            self.window.robot_buttons[0].configure.assert_called_with(
+                state="normal" if connected and not busy else "disabled")
 
 
 class GuiTests(unittest.TestCase):
@@ -50,7 +116,8 @@ class GuiTests(unittest.TestCase):
             self.window._pressionar(SimpleNamespace(keysym=keysym))
         self.assertEqual(self.window.pressionadas, {"up", "w"})
         self.window._soltar(SimpleNamespace(keysym="Up"))
-        self.window.root.update_idletasks()
+        self.window.root.after(60, self.window.root.quit)
+        self.window.root.mainloop()
         self.assertEqual(self.window.pressionadas, {"w"})
 
     def test_posture_clears_all_movement_keys_including_arrows(self):
@@ -82,6 +149,19 @@ class GuiTests(unittest.TestCase):
         self.window._soltar(event)
         self.window._pressionar(event)
         self.window.on_action.assert_called_once_with("Reconectar")
+
+    def test_camera_viewport_does_not_push_controls_when_image_changes(self):
+        from foto_webrtc.models import Preview
+
+        self.window.root.update()
+        initial = self.window.preview.winfo_width(), self.window.preview.winfo_height()
+        ppm = b"P6\n1920 1080\n255\n" + bytes([100, 110, 120]) * (1920 * 1080)
+        self.window.mostrar(Preview(ppm, time.monotonic()))
+        self.window.root.update()
+        self.assertEqual((self.window.preview.winfo_width(), self.window.preview.winfo_height()), initial)
+        self.assertTrue(self.window.reconnect_button.winfo_viewable())
+        self.assertEqual(self.window.preview.coords(self.window.preview_image),
+                         [initial[0] / 2, initial[1] / 2])
 
     def test_real_tk_with_workers_photo_and_video(self):
         from foto_webrtc.application import Application

@@ -61,6 +61,31 @@ class VideoTests(unittest.TestCase):
         image = cv2.imread(str(images[0]))
         self.assertEqual(image.shape, (60, 80, 3))
 
+    def test_preview_fits_viewport_without_crop_or_distortion(self):
+        # Cor em cada borda permite detectar corte, além de conferir a proporção.
+        self.processor.image = np.full((90, 160, 3), 128, dtype=np.uint8)
+        self.processor.image[:8, :] = (0, 0, 255)
+        self.processor.image[-8:, :] = (255, 0, 0)
+        self.processor.image[8:-8, :8] = (0, 255, 0)
+        self.processor.image[8:-8, -8:] = (0, 255, 255)
+        original = self.processor.image.copy()
+        for viewport, expected in (((640, 480), (640, 360)), ((80, 90), (80, 45)),
+                                   ((160, 40), (71, 40))):
+            with self.subTest(viewport=viewport):
+                self.processor.size = viewport
+                self.processor._preview()
+                preview = self.previews.get_nowait()
+                decoded = cv2.imdecode(np.frombuffer(preview.ppm, dtype=np.uint8), cv2.IMREAD_COLOR)
+                height, width = decoded.shape[:2]
+                self.assertEqual((width, height), expected)
+                self.assertLessEqual(width, viewport[0])
+                self.assertLessEqual(height, viewport[1])
+                np.testing.assert_array_equal(decoded[0, width // 2], (0, 0, 255))
+                np.testing.assert_array_equal(decoded[-1, width // 2], (255, 0, 0))
+                np.testing.assert_array_equal(decoded[height // 2, 0], (0, 255, 0))
+                np.testing.assert_array_equal(decoded[height // 2, -1], (0, 255, 255))
+                np.testing.assert_array_equal(self.processor.image, original)
+
     def test_resolution_change_closes_mp4_safely(self):
         self.processor._start_video(Command("Video"))
         self.processor._record(packet(0))

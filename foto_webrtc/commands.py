@@ -46,6 +46,10 @@ class LocomotionWorker(Worker):
             if moving:
                 self.mailbox.move(Command.move(x, y, z, generation=generation,
                     valid_until=snapshot.timestamp + self.config.input_timeout))
+                if not was_moving:
+                    logger.bind(component="commands", event="movement_started", keys=sorted(keys),
+                                parameters={"x": x, "y": y, "z": z}, generation=generation
+                                ).info("Locomoção solicitada pelo teclado: x={}, y={}, z={}", x, y, z)
             elif was_moving:
                 # Soltar tecla / perder heartbeat zera uma vez; não envia Move
                 # continuamente durante uma postura, deitado ou amortecido.
