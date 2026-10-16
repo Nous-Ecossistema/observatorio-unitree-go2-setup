@@ -60,6 +60,15 @@ class CommandMailbox:
                         command_id=command.command_id, reason=reason,
                         generation=self._generation).info("Parada solicitada")
 
+    def reset(self, reason):
+        """Descarta toda a sessão anterior, inclusive ações/posturas pendentes."""
+        with self._lock:
+            self._generation += 1
+            for queue in (self.moves, self.actions, self.stops):
+                get_latest(queue)
+            logger.bind(component="commands", event="commands_reset", reason=reason,
+                        generation=self._generation).info("Comandos da sessão descartados")
+
     def action(self, name):
         with self._lock:
             self._generation += 1

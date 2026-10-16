@@ -51,6 +51,22 @@ class GuiTests(unittest.TestCase):
         self.window.fechar()
         self.window.on_close.assert_called_once_with()
 
+    def test_reconnect_button_is_only_enabled_offline(self):
+        from foto_webrtc.models import ConnectionState
+
+        for state in ConnectionState:
+            self.window.set_connection_state(state)
+            expected = "normal" if state in (ConnectionState.DISCONNECTED, ConnectionState.ERROR) else "disabled"
+            self.assertEqual(str(self.window.reconnect_button["state"]), expected)
+
+    def test_f5_requests_reconnect_once_during_autorepeat(self):
+        self.window.on_action = Mock()
+        event = SimpleNamespace(keysym="F5")
+        self.window._pressionar(event)
+        self.window._soltar(event)
+        self.window._pressionar(event)
+        self.window.on_action.assert_called_once_with("Reconectar")
+
     def test_real_tk_with_workers_photo_and_video(self):
         from foto_webrtc.application import Application
         from foto_webrtc.config import Config

@@ -187,7 +187,7 @@ class LifecycleTests(unittest.TestCase):
     def test_worker_exception_stops_application_and_closes_resources(self):
         class BrokenTransport(FakeTransport):
             async def connect(self):
-                raise ConnectionError("Go2 indisponível")
+                raise RuntimeError("Erro crítico no transporte")
 
         app = Application(self.config, self.window, BrokenTransport)
         self.window.root.after(1000, self.window.on_close)

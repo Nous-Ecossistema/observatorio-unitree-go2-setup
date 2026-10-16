@@ -58,7 +58,9 @@ class Application:
     def action(self, name):
         if self.stop_event.is_set():
             return
-        if name == "Parar":
+        if name == "Reconectar":
+            return self.robot.request_reconnect()
+        elif name == "Parar":
             self.mailbox.halt("teclado/foco")
         elif name in ("Foto", "Video"):
             command = Command(name)
@@ -68,7 +70,11 @@ class Application:
                 logger.bind(event="queue_full", component="video", command=name,
                             command_id=command.command_id).warning("Fila de captura cheia; ação rejeitada")
         else:
-            self.mailbox.action(name)
+            if not self.robot.ready.is_set() or not self.robot.state.connected:
+                logger.bind(event="offline_command_blocked", component="commands", command=name
+                            ).warning("Comando bloqueado em modo offline: {}", name)
+                return False
+            return self.mailbox.action(name)
 
     def _tick(self):
         if self.stop_event.is_set():
@@ -79,6 +85,12 @@ class Application:
             self.window.status.set("Encerrando: aguardando threads e finalizando MP4..." if not
                                    self.slow_shutdown.is_set() else "Encerramento lento; aguardando recursos (veja logs)")
         else:
+            previous = self.robot_state
+            self.robot_state = get_latest(self.ui_states, self.robot_state)
+            if not self.robot_state.connected or not previous.connected:
+                self.window.pressionadas.difference_update("wsadqe")
+            if hasattr(self.window, "set_connection_state"):
+                self.window.set_connection_state(self.robot_state.connection_state)
             put_latest(self.inputs, InputSnapshot(frozenset(self.window.pressionadas),
                                                  generation=self.mailbox.generation))
             put_latest(self.sizes, (self.window.preview.winfo_width(), self.window.preview.winfo_height()))
@@ -86,10 +98,11 @@ class Application:
             if preview is not None:
                 self.window.mostrar(preview)
                 self.frame_ts = preview.received_at
-            self.robot_state = get_latest(self.ui_states, self.robot_state)
             self.video_state = get_latest(self.video_states, self.video_state)
             camera = "OK" if self.frame_ts and time.monotonic() - self.frame_ts < self.config.frame_timeout else "sem imagens recentes"
-            self.window.status.set(f"{self.robot_state.message} | Câmera: {camera} | {self.video_state.message}")
+            if not self.robot_state.connected:
+                camera = "offline"
+            self.window.status.set(f"{self.robot_state.connection_state.value} | {self.robot_state.message} | Câmera: {camera} | {self.video_state.message}")
         self.window.root.after(30, self._tick)
 
     def request_shutdown(self):

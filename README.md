@@ -91,6 +91,23 @@ Teste apenas a interface, sem conexão ou comandos:
 uv run --locked go2-env --testar-janela
 ```
 
+A execução normal também mantém a interface aberta quando o Go2 está
+inacessível. A conexão exibe **Conectando**, **Conectado**, **Desconectado** ou
+**Erro**. Em modo offline, confira o Wi-Fi/robô e pressione **F5** ou clique em
+**Reconectar**. O botão fica desabilitado durante a conexão e enquanto conectado;
+pedidos repetidos não criam novas threads nem tentativas simultâneas.
+
+Cada reconexão usa um transporte novo na mesma thread `go2-rtc` e no mesmo loop
+asyncio. Leituras de vídeo e comandos da sessão anterior são cancelados ou
+descartados. Os comandos do robô ficam bloqueados sem conexão válida, e após
+reconectar é necessário **U/R** aceito para liberar a locomoção. Não há retry
+automático nem retomada de movimentos antigos.
+
+Falhas de rede, timeout e sinalização (incluindo `LocalSignalingPortError`)
+são recuperáveis e registradas no Loguru como `connection_recoverable`, com
+tipo de erro e número da tentativa. Bugs, dependências ausentes e outros erros
+críticos mantêm o encerramento coordenado e o diagnóstico `Falha nas threads`.
+
 Consulte todas as opções com `uv run --locked go2-env --help`. Exemplo:
 
 ```bash
@@ -139,6 +156,7 @@ física do robô antes de andar.
 | M | Consultar modo de movimento |
 | P | Salvar foto JPG |
 | V | Iniciar ou finalizar MP4 |
+| F5 / botão Reconectar | Tentar conectar novamente em modo offline |
 | Esc | Parar, finalizar gravação e encerrar |
 
 Soltar as teclas, perder o foco ou perder o heartbeat da GUI solicita velocidade
