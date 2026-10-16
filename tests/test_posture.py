@@ -27,7 +27,7 @@ class PostureTests(unittest.IsolatedAsyncioTestCase):
                 return future
 
         config = Config(mode_settle=0, posture_delays=tuple((name, 0) for name in
-                        ("StandUp", "StandDown", "RecoveryStand", "Hello", "Damp")))
+                        ("StandUp", "BalanceStand", "StandDown", "RecoveryStand", "Hello", "Damp")))
         worker = RobotWorker(config, Event(), CommandMailbox(), Queue(1), Queue(1), Queue(1))
         worker.transport = Transport()
         worker.state = RobotState(connected=True, allowed=True, mode="normal")
@@ -94,10 +94,16 @@ class PostureTests(unittest.IsolatedAsyncioTestCase):
     async def test_mcf_sends_posture_without_switching_to_normal(self):
         for action in ("StandUp", "RecoveryStand", "StandDown", "Damp", "Hello"):
             with self.subTest(action=action):
-                worker = self.worker([{"data": {"data": '{"form":"0","name":"mcf"}'}}, {}])
+                prepares_balance = action in ("StandUp", "RecoveryStand")
+                worker = self.worker([{"data": {"data": '{"form":"0","name":"mcf"}'}}, {}]
+                                     + ([{}] if prepares_balance else []))
                 worker.state = RobotState(connected=True, allowed=False, mode=None)
-                await worker._posture(Command(action))
-                self.assertEqual([c.name for c in worker.transport.commands], ["Consultar", action])
+                command = Command(action)
+                await worker._posture(command)
+                self.assertEqual([c.name for c in worker.transport.commands],
+                                 ["Consultar", action] + (["BalanceStand"] if prepares_balance else []))
+                if prepares_balance:
+                    self.assertEqual(worker.transport.commands[-1].parent_command_id, command.command_id)
                 self.assertEqual(worker.transport.motion_mode, "mcf")
                 self.assertEqual(worker.state.mode, "mcf")
                 self.assertEqual(worker.state.allowed, action in ("StandUp", "RecoveryStand"))
@@ -115,3 +121,19 @@ class PostureTests(unittest.IsolatedAsyncioTestCase):
         await worker._posture(Command("StandUp"))
         self.assertFalse(worker.state.allowed)
         self.assertFalse(worker.state.busy)
+
+    async def test_failed_balance_never_enables_mcf_movement_or_retries(self):
+        worker = self.worker([{}, None])
+        worker.state = RobotState(connected=True, allowed=False, mode="mcf")
+        await worker._posture(Command("StandUp"))
+        self.assertFalse(worker.state.allowed)
+        self.assertFalse(worker.state.busy)
+        self.assertIn("Equilíbrio sem confirmação", worker.state.message)
+        self.assertEqual([c.name for c in worker.transport.commands], ["StandUp", "BalanceStand"])
+
+    async def test_balance_is_explicitly_available_without_repeating_standup(self):
+        worker = self.worker([{}])
+        worker.state = RobotState(connected=True, allowed=False, mode="mcf")
+        await worker._posture(Command("BalanceStand"))
+        self.assertTrue(worker.state.allowed)
+        self.assertEqual([c.name for c in worker.transport.commands], ["BalanceStand"])

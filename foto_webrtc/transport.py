@@ -16,6 +16,7 @@ from typing import Protocol
 from loguru import logger
 
 from .channels import put_latest
+from .faults import FaultTracker
 
 
 def is_recoverable_connection_error(error):
@@ -70,6 +71,19 @@ class WebRTCTransport:
         self.log = logger.bind(component="rtc")
         self.seen_tracks = set()
         self.motion_mode = None
+        self.fault_tracker = FaultTracker()
+        self._listening = False
+
+    @property
+    def faults(self):
+        return self.fault_tracker.faults
+
+    def _attach_channel(self):
+        self.pub_sub = self.connection.datachannel.pub_sub
+        self.channel = self.pub_sub.channel
+        if not self._listening:
+            self.channel.on("message", self._on_message)
+            self._listening = True
 
     async def connect(self):
         from importlib.metadata import version
@@ -78,9 +92,13 @@ class WebRTCTransport:
         from .signaling import exchange_local_sdp
 
         request_timeout = self.config.request_timeout
+        transport = self
 
         class LocalConnection(UnitreeWebRTCConnection):
             async def get_answer_from_local_peer(self, pc, ip):
+                # O canal já existe, mas o SDP ainda não foi enviado: captura
+                # inclusive o snapshot de falhas emitido durante a validação.
+                transport._attach_channel()
                 description = pc.localDescription
                 payload = json.dumps({"id": "", "sdp": description.sdp,
                                       "type": description.type, "token": self.token})
@@ -97,11 +115,9 @@ class WebRTCTransport:
         self.log.bind(event="connecting", driver_version=version("unitree-webrtc-connect"),
                       connection_method="LocalAP").info("Conectando ao Go2 via Wi-Fi AP")
         await asyncio.wait_for(self.connection.connect(), self.config.connect_timeout)
-        self.pub_sub = self.connection.datachannel.pub_sub
-        self.channel = self.pub_sub.channel
+        self._attach_channel()
         if self.channel.readyState != "open":
             raise ConnectionError("Canal WebRTC não abriu")
-        self.channel.on("message", self._on_message)
         self.connection.video.add_track_callback(self._on_track)
         # O driver pode receber a trilha durante connect(), antes do registro
         # do callback. Recolhe também os receivers já negociados.
@@ -178,7 +194,7 @@ class WebRTCTransport:
             if not isinstance(response, dict):
                 return
             if response.get("type") in ("errors", "add_error", "rm_error"):
-                # O SDK só imprime estes avisos; preserva-os também em JSONL.
+                self.fault_tracker.update(response)
                 self.log.bind(event="robot_error", response=response).log(
                     "WARNING" if response.get("data") and response["type"] != "rm_error" else "INFO",
                     "Diagnóstico do robô: {}", response["type"])
@@ -214,11 +230,12 @@ class WebRTCTransport:
 
     def _finish(self, request_id, pending, status, response):
         duration = (time.monotonic() - pending.started) * 1000
+        code = response.get("data", {}).get("header", {}).get("status", {}).get("code") if response else None
         log = self._log(pending, request_id, event="command_result", status=status,
-                        response=response, duration_ms=duration)
+                        response=response, duration_ms=duration, code=code)
         log.log("DEBUG" if status == "accepted" and pending.command.name == "Move" else
                 "INFO" if status == "accepted" else "WARNING",
-                "Resultado de {}: {} ({:.1f} ms)", pending.command.name, status, duration)
+                "Resultado de {}: {} (código {}; {:.1f} ms)", pending.command.name, status, code, duration)
         if pending.future is not None and not pending.future.done():
             pending.future.set_result(response if status == "accepted" else None)
         if status in ("timeout", "rejected", "malformed"):
@@ -255,4 +272,6 @@ class WebRTCTransport:
                     self._finish(request_id, pending, "cancelled", None)
                 self.pending.clear()
                 self.expired.clear()
+                self.fault_tracker = FaultTracker()
+                self._listening = False
                 self.log.bind(event="disconnected").info("WebRTC desconectado")

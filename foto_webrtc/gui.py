@@ -27,6 +27,8 @@ class JanelaCamera:
         self.connection = tk.StringVar(value="GO2  /  Conectando")
         self.movement = tk.StringVar(value="AGUARDANDO CONEXÃO")
         self.media_status = tk.StringVar(value="Câmera: aguardando imagens")
+        self.angular_gain = tk.DoubleVar(value=0.5)
+        self.drive_enabled = False
         header = tk.Frame(self.root, bg="#111827", padx=16, pady=12)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
@@ -58,20 +60,42 @@ class JanelaCamera:
                                    anchor="w", justify="left", wraplength=680)
         self.media_label.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         footer.bind("<Configure>", lambda event: self.media_label.configure(wraplength=max(1, event.width - 24)))
+        driving = tk.Frame(footer, bg="#111827")
+        driving.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        driving.columnconfigure(0, weight=1)
+        driving.columnconfigure(1, weight=2)
+        driving.columnconfigure(2, weight=1)
+        self.turn_buttons = []
+        for column, text, key in ((0, "↶ Virar à esquerda", "turn_left"),
+                                  (2, "Virar à direita ↷", "turn_right")):
+            button = tk.Button(driving, text=text, takefocus=False, state="disabled",
+                bg="#164e63", fg="white", activebackground="#0e7490", activeforeground="white",
+                relief="flat", padx=8, pady=12, cursor="hand2")
+            button.grid(row=0, column=column, sticky="ew", padx=3)
+            button.bind("<ButtonPress-1>", lambda event, key=key: self._iniciar_giro(key))
+            button.bind("<ButtonRelease-1>", lambda event, key=key: self._parar_giro(key))
+            button.bind("<Leave>", lambda event, key=key: self._parar_giro(key))
+            self.turn_buttons.append(button)
+        self.turn_speed = tk.Scale(driving, label="Velocidade do giro · segure os botões para virar",
+            variable=self.angular_gain, from_=0.1, to=1.0, resolution=0.05, orient="horizontal",
+            bg="#111827", fg="#cbd5e1", highlightthickness=0, troughcolor="#374151",
+            activebackground="#0e7490", takefocus=False, borderwidth=0)
+        self.turn_speed.grid(row=0, column=1, sticky="ew", padx=12)
+        self.turn_speed.bind("<ButtonRelease-1>", lambda event: self.root.focus_set())
         posture = tk.Frame(footer, bg="#111827")
-        posture.grid(row=1, column=0, sticky="ew")
+        posture.grid(row=2, column=0, sticky="ew")
         self.robot_buttons = []
         for column, (text, action) in enumerate((("Levantar · U", "StandUp"),
                 ("Recuperar · R", "RecoveryStand"), ("Deitar · J", "StandDown"),
-                ("Aceno · H", "Hello"), ("Amortecer · K", "Damp"), ("Modo · M", "Consultar"))):
+                ("Aceno · H", "Hello"), ("Amortecer · K", "Damp"), ("Equilibrar · B", "BalanceStand"))):
             posture.columnconfigure(column, weight=1, uniform="actions")
             button = self._botao(posture, text, action)
             button.grid(row=0, column=column, sticky="ew", padx=3)
             button.configure(state="disabled")
             self.robot_buttons.append(button)
         tools = tk.Frame(footer, bg="#111827")
-        tools.grid(row=2, column=0, sticky="ew", pady=8)
-        for column, (text, action) in enumerate((("Foto · P", "Foto"), ("Vídeo · V", "Video"),
+        tools.grid(row=3, column=0, sticky="ew", pady=8)
+        for column, (text, action) in enumerate((("Foto · P", "Foto"), ("Vídeo · V", "Video"), ("Modo · M", "Consultar"),
                                                 ("Reconectar · F5", "Reconectar"), ("PARAR · Espaço", "Parar"))):
             tools.columnconfigure(column, weight=1, uniform="tools")
             button = self._botao(tools, text, action)
@@ -79,11 +103,15 @@ class JanelaCamera:
             if action == "Reconectar":
                 self.reconnect_button = button
                 button.configure(state="disabled")
+            elif action == "Consultar":
+                self.mode_button = button
+                self.robot_buttons.append(button)
+                button.configure(state="disabled")
             elif action == "Parar":
                 button.configure(bg="#b91c1c", fg="white", activebackground="#dc2626")
-        tk.Label(footer, text="Segure ↑/↓ ou W/S: frente/trás   •   ←/→ ou A/D: lateral   •   Q/E: giro\n"
+        tk.Label(footer, text="Segure ↑/↓ ou W/S: frente/trás   •   ←/→ ou Q/E: virar   •   A/D: lateral\n"
                  "Aguarde PRONTO PARA ANDAR antes de usar as setas.   Esc: sair",
-                 bg="#111827", fg="#cbd5e1", justify="center").grid(row=3, column=0, sticky="ew")
+                 bg="#111827", fg="#cbd5e1", justify="center").grid(row=4, column=0, sticky="ew")
         self.root.bind("<KeyPress>", self._pressionar)
         self.root.bind("<KeyRelease>", self._soltar)
         self.root.bind("<FocusOut>", self._perder_foco)
@@ -98,9 +126,18 @@ class JanelaCamera:
     def _acionar(self, action):
         if action == "Parar":
             self.pressionadas.clear()
-        elif action in ("StandUp", "StandDown", "RecoveryStand", "Hello", "Damp", "Consultar"):
+        elif action in ("StandUp", "StandDown", "RecoveryStand", "BalanceStand", "Hello", "Damp", "Consultar"):
             self.pressionadas.difference_update(MOVEMENT_KEYS)
         self.on_action(action)
+
+    def _iniciar_giro(self, key):
+        if not self.fechada and self.drive_enabled:
+            self.pressionadas.add(key)
+        return "break"
+
+    def _parar_giro(self, key):
+        self.pressionadas.discard(key)
+        return "break"
 
     def _pressionar(self, evento):
         if self.fechada:
@@ -119,7 +156,7 @@ class JanelaCamera:
             self._acionar("Parar")
         elif tecla not in self.pressionadas:
             self.pressionadas.add(tecla)
-            actions = {"u": "StandUp", "j": "StandDown", "r": "RecoveryStand",
+            actions = {"u": "StandUp", "j": "StandDown", "r": "RecoveryStand", "b": "BalanceStand",
                        "h": "Hello", "k": "Damp", "m": "Consultar", "p": "Foto", "v": "Video"}
             if tecla in actions:
                 self._acionar(actions[tecla])
@@ -154,6 +191,8 @@ class JanelaCamera:
         self.media_status.set(f"Câmera: {camera}   |   {video.message}")
         if not robot.connected:
             message, color = "SEM CONEXÃO", "#fca5a5"
+        elif robot.blocking_faults:
+            message, color = "FALHA ATIVA NO ROBÔ", "#fca5a5"
         elif robot.busy:
             message, color = "AÇÃO EM ANDAMENTO", "#fcd34d"
         elif robot.allowed:
@@ -162,8 +201,14 @@ class JanelaCamera:
             message, color = "LEVANTAR (U) PARA ANDAR", "#fcd34d"
         self.movement.set(message)
         self.movement_label.configure(fg=color)
+        self.drive_enabled = robot.connected and robot.allowed and not robot.busy and not robot.blocking_faults
+        if not self.drive_enabled:
+            self.pressionadas.difference_update(("turn_left", "turn_right"))
+        for button in self.turn_buttons:
+            button.configure(state="normal" if self.drive_enabled else "disabled")
         for button in self.robot_buttons:
-            button.configure(state="normal" if robot.connected and not robot.busy else "disabled")
+            enabled = robot.connected and not robot.busy and (not robot.blocking_faults or button is self.mode_button)
+            button.configure(state="normal" if enabled else "disabled")
 
     def set_connection_state(self, state):
         reconnect = state in (ConnectionState.DISCONNECTED, ConnectionState.ERROR)

@@ -21,6 +21,7 @@ class KeyboardTests(unittest.TestCase):
         self.window.pressionadas = set()
         self.window.solturas = {}
         self.window.fechada = False
+        self.window.drive_enabled = False
         self.window.on_action = Mock()
         self.addCleanup(self.cleanup_timers)
 
@@ -65,6 +66,7 @@ class KeyboardTests(unittest.TestCase):
             setattr(self.window, field, tk.StringVar(master=self.window.root))
         self.window.movement_label = Mock()
         self.window.robot_buttons = [Mock()]
+        self.window.turn_buttons = [Mock(), Mock()]
         for connected, busy, allowed, text in ((False, False, False, "SEM CONEXÃO"),
                 (True, False, False, "LEVANTAR"), (True, True, False, "AÇÃO EM ANDAMENTO"),
                 (True, False, True, "PRONTO PARA ANDAR")):
@@ -72,6 +74,59 @@ class KeyboardTests(unittest.TestCase):
             self.assertIn(text, self.window.movement.get())
             self.window.robot_buttons[0].configure.assert_called_with(
                 state="normal" if connected and not busy else "disabled")
+            for button in self.window.turn_buttons:
+                button.configure.assert_called_with(state="normal" if connected and allowed and not busy else "disabled")
+
+    def test_mouse_turn_is_blocked_until_ready_and_stops_on_release_or_leave(self):
+        self.window._iniciar_giro("turn_left")
+        self.assertFalse(self.window.pressionadas)
+        self.window.drive_enabled = True
+        self.window._iniciar_giro("turn_left")
+        self.assertEqual(self.window.pressionadas, {"turn_left"})
+        self.window._parar_giro("turn_left")
+        self.assertFalse(self.window.pressionadas)
+        self.window._iniciar_giro("turn_right")
+        self.window._perder_foco(None)
+        self.assertFalse(self.window.pressionadas)
+        self.window.on_action.assert_called_once_with("Parar")
+
+    def test_releasing_mouse_turn_preserves_held_keyboard_and_stop_clears_both(self):
+        self.window.drive_enabled = True
+        self.window._pressionar(SimpleNamespace(keysym="Up"))
+        self.window._iniciar_giro("turn_right")
+        self.window._parar_giro("turn_right")
+        self.assertEqual(self.window.pressionadas, {"up"})
+        self.window._iniciar_giro("turn_right")
+        self.window._acionar("Parar")
+        self.assertFalse(self.window.pressionadas)
+        self.window.on_action.assert_called_once_with("Parar")
+
+    def test_turn_gain_rejects_invalid_values(self):
+        from foto_webrtc.models import InputSnapshot
+
+        for gain in (0, -0.1, 1.1, float("nan"), float("inf")):
+            with self.subTest(gain=gain), self.assertRaises(ValueError):
+                InputSnapshot(angular_gain=gain)
+
+    def test_motor_fault_indicator_overrides_ready_and_disables_posture_buttons(self):
+        import tkinter as tk
+        from foto_webrtc.models import RobotState, VideoState
+        from foto_webrtc.faults import RobotFault
+
+        for field in ("connection", "status", "media_status", "movement"):
+            setattr(self.window, field, tk.StringVar(master=self.window.root))
+        self.window.movement_label = Mock()
+        self.window.mode_button = Mock()
+        self.window.robot_buttons = [Mock(), self.window.mode_button]
+        self.window.turn_buttons = [Mock()]
+        self.window.pressionadas.add("turn_left")
+        state = RobotState(connected=True, allowed=True, faults=(RobotFault(123, 309, 4),))
+        self.window.atualizar_estado(state, "OK", VideoState())
+        self.assertEqual(self.window.movement.get(), "FALHA ATIVA NO ROBÔ")
+        self.assertFalse(self.window.drive_enabled)
+        self.assertFalse(self.window.pressionadas)
+        self.window.robot_buttons[0].configure.assert_called_with(state="disabled")
+        self.window.mode_button.configure.assert_called_with(state="normal")
 
 
 class GuiTests(unittest.TestCase):

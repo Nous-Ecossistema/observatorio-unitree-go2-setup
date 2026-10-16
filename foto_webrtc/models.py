@@ -6,6 +6,8 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from .faults import RobotFault
+
 
 @dataclass(frozen=True)
 class Command:
@@ -31,6 +33,11 @@ class InputSnapshot:
     keys: frozenset[str] = frozenset()
     timestamp: float = field(default_factory=time.monotonic)
     generation: int = 0
+    angular_gain: float | None = None
+
+    def __post_init__(self):
+        if self.angular_gain is not None and not 0 < self.angular_gain <= 1:
+            raise ValueError("A velocidade de giro deve estar entre 0 (exclusivo) e 1")
 
 
 class ConnectionState(str, Enum):
@@ -48,6 +55,11 @@ class RobotState:
     mode: str | None = None
     message: str = "Desconectado. Modo offline"
     connection_state: ConnectionState = ConnectionState.DISCONNECTED
+    faults: tuple[RobotFault, ...] = ()
+
+    @property
+    def blocking_faults(self):
+        return tuple(fault for fault in self.faults if fault.blocks_motion)
 
 
 @dataclass(frozen=True)

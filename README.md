@@ -95,7 +95,9 @@ make window
 make diagnostico
 ```
 
-`make diagnostico` conecta ao Go2 e consulta somente o modo atual; não envia
+`make diagnostico` conecta ao Go2 e consulta o modo atual e o estado informado
+pela API (`state`, `bodyHeight`, `speedLevel`, `gait`), lê uma amostra de
+`LowState` com temperaturas dos motores e resume as falhas ativas; não envia
 comandos de postura nem de movimento. Compartilhe a saída completa para
 investigar falhas de comunicação da API.
 
@@ -169,16 +171,24 @@ em áreas separadas. Os botões de postura ficam desabilitados durante uma açã
 | Tecla | Ação |
 | --- | --- |
 | ↑ / ↓ ou W / S | Frente / trás enquanto segura |
-| ← / → ou A / D | Deslocamento lateral enquanto segura |
-| Q / E | Giro |
+| ← / → ou Q / E | Virar à esquerda / direita enquanto segura |
+| A / D | Deslocamento lateral enquanto segura |
 | Espaço | Parar |
 | U / J / R | Levantar / deitar / recuperar |
+| B / botão Equilibrar | BalanceStand: preparar equilíbrio |
 | H / K | Aceno / amortecer juntas |
 | M | Consultar modo de movimento |
 | P | Salvar foto JPG |
 | V | Iniciar ou finalizar MP4 |
 | F5 / botão Reconectar | Tentar conectar novamente em modo offline |
 | Esc | Parar, finalizar gravação e encerrar |
+
+Para virar no lugar, segure **←/→**, **Q/E** ou um dos botões **Virar** na
+interface. Para fazer uma curva andando, combine **↑** com **←** ou **→**.
+O controle **Velocidade do giro** ajusta a rotação entre 0,10 e 1,00, com
+padrão 0,50, tanto no teclado quanto nos botões. Soltar o botão ou tirar o
+ponteiro de cima dele encerra o giro solicitado pelo mouse. Os botões de giro
+só ficam disponíveis em **PRONTO PARA ANDAR**.
 
 Soltar as teclas, perder o foco ou perder o heartbeat da GUI solicita velocidade
 zero. Posturas suspendem a locomoção enquanto estão em andamento; depois de
@@ -191,7 +201,29 @@ uma postura que já foi aceita pelo robô.
 
 Os modos `normal` e `mcf` são aceitos. Em `mcf`, o programa usa a tabela
 `SPORT_CMD_MCF` do driver e mantém esse modo, sem forçar uma troca para `normal`.
-A consulta de modo não libera a locomoção: continua sendo necessário U/R aceito.
+Após U/R aceito em `mcf`, aguarda a postura e solicita `BalanceStand` (1002 no
+tópico sport). A locomoção só é liberada quando essa etapa também é aceita.
+O botão **Equilibrar (B)** permite solicitar essa etapa separadamente, sem
+repetir Levantar. A sequência após StandUp segue a
+[orientação do driver](https://github.com/legion1581/unitree_webrtc_connect/blob/master/examples/go2/data_channel/sportmode_mcf/sportmode_mcf.py).
+A consulta de modo não libera a locomoção. Código zero continua sendo
+aceitação da API e não comprova que o robô tenha ficado em pé. Se a API aceita
+e o robô continua deitado, encerre a interface e compartilhe a saída atual de
+`make diagnostico`, incluindo a consulta de estado.
+
+Falhas recebidas em `errors`, `add_error` e `rm_error` são acompanhadas desde
+a sinalização, antes de `connect()` concluir. Assim os alertas iniciais de
+motor não se perdem. Falhas de motor (fontes 300–399) e de proteção de movimento
+(600) exibem **FALHA ATIVA NO ROBÔ**, bloqueiam novas posturas e velocidades,
+e mantêm a consulta de modo disponível. Uma falha removida não retoma movimentos:
+é necessário um novo comando explícito de postura. Os códigos são exibidos com
+fonte e valor hexadecimal, preservando os dados do firmware.
+
+Se aparecerem erros como `306-10` e `309-4`, verifique os alarmes e as
+temperaturas no Unitree Go; não continue repetindo posturas para tentar limpar
+uma proteção. `GetState` com payload vazio não confirma estado nem temperatura.
+O diagnóstico tenta obter temperaturas por `LowState` durante até 3 segundos
+e informa explicitamente quando não recebe telemetria.
 
 A parada depende do programa e da conexão; não substitui uma parada física de
 emergência. Falha, rejeição ou timeout de um Move ativo suspende a locomoção,

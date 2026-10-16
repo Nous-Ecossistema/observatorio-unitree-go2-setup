@@ -112,6 +112,22 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(queue.qsize(), 1)
         self.assertEqual(get_latest(queue), 9999)
 
+    def test_motor_fault_blocks_velocity_even_if_permission_is_true(self):
+        from foto_webrtc.faults import RobotFault
+
+        config = Config(publish_hz=100)
+        stop, inputs, states, bus = threading.Event(), Queue(1), Queue(1), CommandMailbox()
+        put_latest(inputs, InputSnapshot(frozenset({"up", "left"})))
+        put_latest(states, RobotState(connected=True, allowed=True, faults=(RobotFault(123, 306, 16),)))
+        worker = LocomotionWorker(config, stop, inputs, states, bus)
+        worker.start()
+        try:
+            time.sleep(0.04)
+            self.assertIsNone(bus.take())
+        finally:
+            stop.set()
+            worker.join(1)
+
     def test_input_watchdog_stops_without_new_gui_heartbeat(self):
         config = Config(publish_hz=100, input_timeout=0.04)
         stop, inputs, states, bus = threading.Event(), Queue(1), Queue(1), CommandMailbox()
@@ -141,8 +157,11 @@ class QueueTests(unittest.TestCase):
         config = Config(publish_hz=100)
         for keys, expected in [
             ({"up", "w"}, (0.3, 0, 0)), ({"down"}, (-0.3, 0, 0)),
-            ({"left", "a"}, (0, 0.3, 0)), ({"right"}, (0, -0.3, 0)),
-            ({"up", "right", "q"}, (0.3, -0.3, 0.5)),
+            ({"left", "q"}, (0, 0, 0.5)), ({"right", "e"}, (0, 0, -0.5)),
+            ({"a"}, (0, 0.3, 0)), ({"d"}, (0, -0.3, 0)),
+            ({"up", "right"}, (0.3, 0, -0.5)),
+            ({"up", "right", "q"}, (0.3, 0, 0)),
+            ({"turn_left"}, (0, 0, 0.5)), ({"turn_right"}, (0, 0, -0.5)),
         ]:
             with self.subTest(keys=keys):
                 stop, inputs, states, bus = threading.Event(), Queue(1), Queue(1), CommandMailbox()
@@ -259,6 +278,21 @@ class LifecycleTests(unittest.TestCase):
         moving = [i for i, c in enumerate(calls) if c.name == "Move" and c.parameter.get("x") == 0.3]
         self.assertTrue(moving)
         self.assertTrue(any(c.name == "Move" and not any(c.parameter.values()) for c in calls[moving[-1] + 1:]))
+
+    def test_turn_speed_changes_reach_movement_and_release_stops(self):
+        gain = [0.5]
+        self.window.angular_gain = SimpleNamespace(get=lambda: gain[0], set=lambda value: gain.__setitem__(0, value))
+        app = Application(self.config, self.window, FakeTransport)
+        self.window.root.after(60, lambda: app.action("StandUp"))
+        self.window.root.after(130, lambda: self.window.pressionadas.add("left"))
+        self.window.root.after(230, lambda: gain.__setitem__(0, 0.8))
+        self.window.root.after(330, lambda: self.window.pressionadas.clear())
+        self.window.root.after(450, self.window.on_close)
+        app.run()
+        moves = [c.parameter for c, _ in FakeTransport.instances[0].calls if c.name == "Move"]
+        self.assertIn({"x": 0, "y": 0, "z": 0.5}, moves)
+        self.assertIn({"x": 0, "y": 0, "z": 0.8}, moves)
+        self.assertEqual(moves[-1], {"x": 0, "y": 0, "z": 0})
 
     def test_worker_exception_stops_application_and_closes_resources(self):
         class BrokenTransport(FakeTransport):

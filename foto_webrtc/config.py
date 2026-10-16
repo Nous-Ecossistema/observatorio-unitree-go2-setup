@@ -19,7 +19,7 @@ class Config:
     frame_timeout: float = 2.0
     shutdown_timeout: float = 10.0
     mode_settle: float = 5.0
-    posture_delays: tuple = (("StandUp", 3.0), ("StandDown", 3.0),
+    posture_delays: tuple = (("StandUp", 3.0), ("BalanceStand", 1.0), ("StandDown", 3.0),
                              ("RecoveryStand", 5.0), ("Hello", 2.0), ("Damp", 0.5))
 
     def __post_init__(self):

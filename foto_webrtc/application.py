@@ -41,6 +41,8 @@ class Application:
         self.gui_failure = None
         self.window.on_action = self.action
         self.window.on_close = self.request_shutdown
+        if hasattr(self.window, "angular_gain"):
+            self.window.angular_gain.set(min(1.0, max(0.1, config.angular_gain)))
         self.window.root.report_callback_exception = self._gui_exception
 
     def _gui_exception(self, kind, error, traceback):
@@ -74,6 +76,10 @@ class Application:
                 logger.bind(event="offline_command_blocked", component="commands", command=name
                             ).warning("Comando bloqueado em modo offline: {}", name)
                 return False
+            if self.robot.state.blocking_faults and name != "Consultar":
+                logger.bind(event="fault_command_blocked", component="commands", command=name
+                            ).warning("Comando bloqueado: há falhas de motor/proteção ativas no robô")
+                return False
             if self.robot.state.busy or not self.mailbox.actions.empty():
                 logger.bind(event="action_busy", component="commands", command=name).warning(
                     "Ação rejeitada: aguarde a ação atual terminar")
@@ -96,7 +102,8 @@ class Application:
             if hasattr(self.window, "set_connection_state"):
                 self.window.set_connection_state(self.robot_state.connection_state)
             put_latest(self.inputs, InputSnapshot(frozenset(self.window.pressionadas),
-                                                 generation=self.mailbox.generation))
+                generation=self.mailbox.generation,
+                angular_gain=self.window.angular_gain.get() if hasattr(self.window, "angular_gain") else None))
             put_latest(self.sizes, (self.window.preview.winfo_width(), self.window.preview.winfo_height()))
             preview = get_latest(self.previews)
             if preview is not None:
