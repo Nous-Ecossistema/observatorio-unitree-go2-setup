@@ -152,11 +152,11 @@ class VideoProcessor(Worker):
             height, width = self.image.shape[:2]
             if (width, height) != (self.stream.width, self.stream.height):
                 raise ValueError("A resolução mudou durante a gravação")
-            source = packet.frame
-            timestamp = source.pts * source.time_base if source.pts is not None and source.time_base is not None else Fraction(packet.received_at)
             if self.first_timestamp is None:
-                self.first_timestamp = timestamp
-            slot = round((timestamp - self.first_timestamp) * 30)
+                self.first_timestamp = packet.received_at
+            # Use wall-clock arrival intervals: source PTS can advance normally
+            # even when the decoder delivers only a few frames over many seconds.
+            slot = round((packet.received_at - self.first_timestamp) * 30)
             if slot <= self.last_slot:
                 return
             # Novo frame: não muda pts/time_base do objeto recebido do RTC.

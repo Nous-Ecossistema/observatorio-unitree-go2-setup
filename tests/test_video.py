@@ -18,10 +18,10 @@ from foto_webrtc.models import Command, VideoFrame
 from foto_webrtc.video import VideoProcessor
 
 
-def packet(slot, width=80, height=60):
+def packet(slot, width=80, height=60, received_at=None):
     frame = av.VideoFrame.from_ndarray(np.full((height, width, 3), 128, dtype=np.uint8), format="bgr24")
     frame.pts, frame.time_base = slot, Fraction(1, 30)
-    return VideoFrame(frame)
+    return VideoFrame(frame, received_at=received_at) if received_at is not None else VideoFrame(frame)
 
 
 class VideoTests(unittest.TestCase):
@@ -34,20 +34,34 @@ class VideoTests(unittest.TestCase):
         self.processor.image = np.full((60, 80, 3), 128, dtype=np.uint8)
         self.processor.last_received = time.monotonic()
 
-    def test_mp4_rebases_timestamps_preserves_gaps_and_does_not_mutate_source(self):
+    def test_mp4_uses_arrival_timestamps_preserves_gaps_and_does_not_mutate_source(self):
         self.processor._start_video(Command("Video"))
-        for slot in (100, 101, 101, 105, 109):
-            frame = packet(slot)
+        started = time.monotonic()
+        for slot, received_slot in zip((100, 101, 101, 105, 109), (0, 1, 5, 7, 9)):
+            frame = packet(slot, received_at=started + received_slot / 30)
             self.processor._record(frame)
             self.assertEqual(frame.frame.pts, slot)
         self.processor._stop_video()
         with av.open(str(self.processor.video_path)) as container:
             decoded = list(container.decode(video=0))
-        self.assertEqual(len(decoded), 4)
+        self.assertEqual(len(decoded), 5)
         times = [float(frame.pts * frame.time_base) for frame in decoded]
         self.assertAlmostEqual(times[0], 0)
         self.assertAlmostEqual(times[-1], 0.3, places=3)
         self.assertEqual((decoded[0].width, decoded[0].height), (80, 60))
+
+    def test_mp4_keeps_long_arrival_gaps_even_when_source_pts_does_not(self):
+        self.processor._start_video(Command("Video"))
+        started = time.monotonic()
+        for slot, elapsed in enumerate((0, 1, 2)):
+            self.processor._record(packet(slot, received_at=started + elapsed))
+        self.processor._stop_video()
+        with av.open(str(self.processor.video_path)) as container:
+            decoded = list(container.decode(video=0))
+            duration = float(container.streams.video[0].duration *
+                             container.streams.video[0].time_base)
+        self.assertEqual(len(decoded), 3)
+        self.assertAlmostEqual(duration, 2 + 1 / 30, places=2)
 
     def test_photo_during_recording_and_overlay_only_on_preview(self):
         self.processor._start_video(Command("Video"))
