@@ -9,7 +9,8 @@ from queue import Empty
 from loguru import logger
 
 from .channels import get_latest, put_latest
-from .models import ConnectionState, Preview, VideoFrame, VideoState
+from .calibration import CameraCorrection
+from .models import ConnectionState, PhotoResult, Preview, VideoFrame, VideoState
 from .workers import Worker
 
 
@@ -70,10 +71,16 @@ class CaptureWorker(Worker):
 
 
 class VideoProcessor(Worker):
-    def __init__(self, config, stop_event, frames, previews, actions, states, sizes):
+    def __init__(self, config, stop_event, frames, previews, actions, states, sizes, photos=None):
         super().__init__("go2-video", stop_event)
         self.config, self.frames, self.previews = config, frames, previews
         self.actions, self.states, self.sizes = actions, states, sizes
+        self.photos = photos
+        # A configuração é validada antes de iniciar qualquer worker/conexão.
+        self.correction = (CameraCorrection(config.calibration_path, config.correction_alpha)
+                           if config.calibration_path is not None else None)
+        self.correction_error = None
+        self.raw_image = None
         self.image = None
         self.last_received = 0.0
         self.size = (960, 540)
@@ -95,14 +102,27 @@ class VideoProcessor(Worker):
         started = time.monotonic()
         if not self._fresh():
             log.warning("Foto recusada: câmera sem frame recente")
-            self._status("Foto: aguarde imagens recentes")
+            self._status(self.correction_error or "Foto: aguarde imagens recentes")
             return
-        path = self.config.output_dir / "fotos" / nome_unico("foto_campo", "jpg")
+        path = self.config.photo_root / ("corrigidas" if self.correction else "originais") / nome_unico(
+            "foto_corrigida" if self.correction else "foto_campo", "jpg")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            original_path = None
+            if self.correction is not None:
+                if self.raw_image is None:
+                    raise ValueError("Frame original indisponível para esta foto")
+                original_path = self.config.photo_root / "originais" / f"{path.stem}_original.png"
+                original_path.parent.mkdir(parents=True, exist_ok=True)
+                if not cv2.imwrite(str(original_path), self.raw_image):
+                    raise OSError("OpenCV não conseguiu gravar o original")
             if not cv2.imwrite(str(path), self.image):
                 raise OSError("OpenCV não conseguiu gravar o JPG")
-            log.bind(path=str(path), duration_ms=(time.monotonic() - started) * 1000).info("Foto salva: {}", path)
+            log.bind(path=str(path), original_path=str(original_path) if original_path else None,
+                     corrected=self.correction is not None,
+                     duration_ms=(time.monotonic() - started) * 1000).info("Foto salva: {}", path)
+            if self.photos is not None:
+                put_latest(self.photos, PhotoResult(self._ppm(self.image, (960, 540)), path, original_path))
             self._status(f"Foto salva: {path.name}")
         except Exception:
             log.exception("Falha ao salvar foto")
@@ -113,7 +133,7 @@ class VideoProcessor(Worker):
 
         if not self._fresh():
             self.log.bind(event="recording_rejected", command_id=command.command_id).warning("Vídeo recusado: sem frame recente")
-            self._status("Vídeo: aguarde imagens recentes")
+            self._status(self.correction_error or "Vídeo: aguarde imagens recentes")
             return
         height, width = self.image.shape[:2]
         if width % 2 or height % 2:
@@ -190,25 +210,68 @@ class VideoProcessor(Worker):
                           ).exception("Falha ao finalizar MP4; confira o arquivo")
             self._status("Falha ao finalizar MP4")
 
-    def _preview(self):
+    @staticmethod
+    def _fit(image, size):
         import cv2
 
-        image = self.image.copy()
         height, width = image.shape[:2]
-        scale = min(max(self.size[0], 1) / width, max(self.size[1], 1) / height)
+        scale = min(max(size[0], 1) / width, max(size[1], 1) / height)
         if scale != 1:
             image = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))),
                                interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+        return image
+
+    @staticmethod
+    def _ppm(image, size=None):
+        import cv2
+
+        if size is not None:
+            image = VideoProcessor._fit(image, size)
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        height, width = rgb.shape[:2]
+        return f"P6\n{width} {height}\n255\n".encode() + rgb.tobytes()
+
+    def _preview(self, original=None):
+        import cv2
+
+        image = self._fit(self.image if original is None else original, self.size).copy()
+        if self.correction is not None:
+            label = "ORIGINAL - correcao indisponivel" if self.correction_error else "CAMERA CORRIGIDA"
+            cv2.putText(image, label, (12, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (0, 255, 255), 1, cv2.LINE_AA)
         if self.container is not None:
             seconds = int(time.monotonic() - self.video_start)
             cv2.putText(image, f"REC {seconds // 60:02d}:{seconds % 60:02d} | V: parar",
                         (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        height, width = rgb.shape[:2]
-        ppm = f"P6\n{width} {height}\n255\n".encode() + rgb.tobytes()
-        put_latest(self.previews, Preview(ppm, self.last_received))
+        put_latest(self.previews, Preview(self._ppm(image), self.last_received))
+
+    def _receive_image(self, packet):
+        self.raw_image = packet.frame.to_ndarray(format="bgr24")
+        self.last_received = packet.received_at
+        try:
+            self.image = (self.correction.apply(self.raw_image) if self.correction
+                          else self.raw_image)
+        except ValueError as error:
+            self.image = None  # Não fotografa/grava um frame antigo ou sem correção.
+            message = f"Correção indisponível: {error}"
+            if self.correction_error != message:
+                self.log.bind(event="correction_unavailable").warning(message)
+                self._stop_video()
+                self._status(message)
+            self.correction_error = message
+            self._preview(self.raw_image)
+            return False
+        recovered = self.correction_error is not None
+        self.correction_error = None
+        if recovered or self.state.message in ("Aguardando câmera", "Fluxo da câmera encerrado"):
+            self._status("Câmera corrigida (pinhole)" if self.correction else "Câmera transmitindo")
+        return True
 
     def work(self):
+        if self.correction is not None:
+            self.log.bind(event="calibration_loaded", path=str(self.correction.path),
+                          image_size=self.correction.size, alpha=self.correction.alpha
+                          ).info("Correção pinhole ativa: {}", self.correction.path)
         self._status("Aguardando câmera")
         try:
             while not self.stop_event.is_set():
@@ -235,14 +298,14 @@ class VideoProcessor(Worker):
                 packet = get_latest(self.frames, packet)
                 if packet.frame is None:
                     self.image = None
+                    self.raw_image = None
+                    self.correction_error = None
                     self._stop_video()
                     self._status("Fluxo da câmera encerrado")
                     continue
                 started = time.monotonic()
-                self.image = packet.frame.to_ndarray(format="bgr24")
-                self.last_received = packet.received_at
-                if self.state.message in ("Aguardando câmera", "Fluxo da câmera encerrado"):
-                    self._status("Câmera transmitindo")
+                if not self._receive_image(packet):
+                    continue
                 self._record(packet)
                 self._preview()
                 self.log.bind(event="frame_processed", duration_ms=(time.monotonic() - started) * 1000,

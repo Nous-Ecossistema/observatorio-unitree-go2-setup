@@ -1,417 +1,490 @@
 # Go2 — câmera e teleoperação via WebRTC
 
-Aplicação Python para visualizar a câmera do **Unitree Go2**, salvar fotos JPG,
-gravar vídeos MP4/H.264 e enviar comandos de postura e locomoção pelo Wi-Fi
-local. Mantém Tkinter, OpenCV, PyAV/aiortc, todas as teclas e as entradas
-históricas, com workers separados e logs correlacionados usando **Loguru**.
+Aplicação Python para visualizar a câmera do **Unitree Go2**, tirar fotos,
+gravar vídeos e controlar o robô pelo Wi-Fi local.
 
-## Pré-requisitos
+**Python 3.12 · WebRTC · Tkinter · OpenCV · PyAV · Loguru**
 
-- Python **3.12**, indicado em `.python-version`.
-- Linux com sessão gráfica e Tkinter.
-- `uv` para instalar, executar e gerenciar as dependências Python.
-- Na máquina que controla o robô: Go2 acessível pelo Wi-Fi AP, em `192.168.12.1`.
-- PortAudio para as dependências de áudio do driver, mesmo usando apenas vídeo.
-- Encoder `libx264` na instalação do PyAV.
+| Câmera e captura | Controle | Processamento |
+| --- | --- | --- |
+| Vídeo ao vivo, fotos JPG e gravação MP4/H.264 | Teclado, botões, posturas e reconexão manual | Calibração com tabuleiro e correção de prévia, fotos e vídeos |
 
-Para executar a interface e o driver na máquina de controle, instale os
-pré-requisitos de sistema. Em Ubuntu/Debian:
+[Instalação](#instalação) · [Como usar](#como-usar) · [Calibração](#calibração-e-imagens) · [Arquitetura C4](#arquitetura-c4) · [Problemas e soluções](#problemas-e-soluções)
+
+## Como o projeto evoluiu
+
+| Etapa | O que foi feito |
+| --- | --- |
+| Preparação | Instalação das dependências e criação do ambiente Python em `~/go2_env` |
+| Primeira conexão | Recepção da câmera e captura de fotos com `foto_webrtc.py` |
+| Primeiros experimentos | Teleoperação e tentativa de correção fisheye com parâmetros fixos |
+| Aplicação atual | Interface Tkinter, tarefas separadas em threads, logs, diagnóstico e gravação |
+| Calibração | Coleta com tabuleiro, cálculo dos parâmetros e integração da correção |
+| Organização | Fotos originais, corrigidas e comparações em pastas separadas |
+
+A comunicação usada é **WebRTC**: HTTP na negociação inicial, uma trilha de
+vídeo e um DataChannel para comandos. O clone de `unitree_sdk2_python` fez parte
+dos registros iniciais; a aplicação atual usa o driver `unitree-webrtc-connect`.
+
+<details>
+<summary>Ver a preparação inicial pelo terminal</summary>
+
+Estes são os comandos iniciais organizados. Para instalar a versão atual com
+as dependências fixadas, siga a próxima seção.
 
 ```bash
 sudo apt update
-sudo apt install python3-tk python3-dev portaudio19-dev build-essential libgl1 libglib2.0-0
+sudo apt install -y git python3-pip python3-venv portaudio19-dev
+
+mkdir -p ~/go2_env/foto_webrtc
+python3 -m venv ~/go2_env
+source ~/go2_env/bin/activate
+cd ~/go2_env/foto_webrtc
+
+python -m pip install --upgrade pip
+python -m pip install unitree_webrtc_connect opencv-python aiortc numpy
 ```
 
-Use os pacotes correspondentes ao seu Python. Tkinter e PortAudio são
-pré-requisitos nativos e não são gerenciados pelo `uv`.
+No início, o código e o ambiente virtual ficavam juntos em `~/go2_env`.
+Hoje o ambiente fica em **`.venv/`**, separado do código e gerenciado pelo `uv`.
+O clone do SDK oficial, para consulta, era feito separadamente:
+
+```bash
+cd ~
+git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
+```
+
+Registro: [issue #17 do ProIC-2026](https://github.com/laismedeiros19/ProIC-2026/issues/17).
+O SDK oficial é uma referência separada e não é necessário para rodar esta aplicação.
+
+</details>
 
 ## Instalação
 
-Instale o `uv` conforme a [documentação oficial](https://docs.astral.sh/uv/getting-started/installation/).
-Na raiz do repositório:
+**Ambiente de referência:** Linux com sessão gráfica, Python 3.12 e Tkinter.
+Faça a instalação com acesso à internet; só depois mude para o Wi-Fi do robô.
+Para receber a câmera e controlar o Go2, o computador precisa estar conectado
+ao Wi-Fi AP do robô, acessível em **`192.168.12.1`**.
+
+### 1. Instalar os pacotes do sistema
+
+Em Ubuntu/Debian, com os pacotes correspondentes ao seu Python:
 
 ```bash
+sudo apt update
+sudo apt install -y git curl make python3 python3-pip python3-venv \
+  python3-tk python3-dev portaudio19-dev build-essential libgl1 libglib2.0-0 \
+  iproute2 iputils-ping
+```
+
+Tkinter fornece a interface; PortAudio é necessário para dependências do driver,
+mesmo quando usamos apenas vídeo.
+
+### 2. Baixar o projeto
+
+```bash
+mkdir -p ~/projetos
+cd ~/projetos
+git clone https://github.com/Nous-Ecossistema/observatorio-unitree-go2-setup.git go2_env
+cd go2_env
+```
+
+Se já tem o código em `~/go2_env`, entre nessa pasta. Execute os próximos comandos
+na **raiz do projeto**, onde ficam `pyproject.toml` e `uv.lock`.
+Confira antes de continuar:
+
+```bash
+pwd
+ls pyproject.toml uv.lock foto_webrtc/teste_video.py
+```
+
+Os três arquivos devem ser encontrados. Em outro terminal, volte à pasta onde
+você clonou o projeto: `~/projetos/go2_env` neste exemplo.
+
+### 3. Instalar o uv e preparar o ambiente
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+# Sair do ambiente antigo, se estiver ativo.
+if [ -n "${VIRTUAL_ENV:-}" ]; then deactivate; fi
 uv sync --locked
-uv pip check
+uv pip check --python .venv/bin/python
 ```
 
-`uv sync --locked` cria `.venv` e instala o projeto editável com as versões
-registradas em **`uv.lock`**, incluindo dependências transitivas e hashes.
-O Python 3.12 é selecionado por `.python-version`; o `uv` pode baixá-lo se
-necessário. Não é preciso criar ou ativar o ambiente manualmente.
+O `uv` cria `.venv/` e instala as versões registradas no lock. Não é necessário
+ativar o ambiente manualmente ao usar `uv run`. A instalação deve terminar sem
+erros, e `uv pip check` deve informar que os pacotes são compatíveis.
+Se aparecer `uv: command not found` em outro terminal, reabra o terminal ou
+repita o comando `export PATH` acima.
 
-`pyproject.toml` define as dependências diretas. **Loguru 0.7.3 é obrigatório**.
-`uv.lock` deve ser versionado junto com `pyproject.toml`. O extra vazio
-`observability` permanece como alias de compatibilidade. `requirements.txt`
-foi substituído pelo fluxo de projeto do `uv`.
+<details>
+<summary>Ver as dependências Python do projeto</summary>
 
-## Gerenciamento de dependências
+| Pacote | Versão declarada | Função |
+| --- | --- | --- |
+| `unitree-webrtc-connect` | 2.2.0 | Comunicação com o Go2 |
+| `aiortc` | 1.15.0 | WebRTC |
+| `av` | 17.1.0 | Frames e gravação MP4 |
+| `opencv-python` | 5.0.0.93 | Imagens e calibração |
+| `numpy` | 2.5.3 | Matrizes e arquivos NPZ |
+| `loguru` | 0.7.3 | Logs |
 
-```bash
-uv add nome-do-pacote          # adiciona uma dependência
-uv add --dev nome-do-pacote    # adiciona uma ferramenta de desenvolvimento
-uv remove nome-do-pacote      # remove uma dependência
-uv lock                      # atualiza o lock após editar pyproject.toml
-uv lock --check               # verifica se o lock está atualizado
-uv sync --locked              # sincroniza o ambiente com o lock versionado
-uv tree --locked              # exibe a árvore de dependências
-```
+As declarações ficam em [pyproject.toml](pyproject.toml); as dependências
+transitivas também são fixadas em [uv.lock](uv.lock).
 
-`uv add` e `uv remove` atualizam a declaração, o lock e o ambiente. Para
-atualizar dependências transitivas compatíveis, use `uv lock --upgrade` e
-depois `uv sync --locked`. As versões diretas estão fixadas com `==`; para
-alterá-las, use `uv add 'nome-do-pacote==nova-versao'`. Revise o diff do lock
-e execute os testes antes de versionar a atualização.
+</details>
 
-Neste workspace, os pré-requisitos nativos ausentes foram extraídos em
-`.venv/system`, sem modificar o sistema. Para usar esse ambiente preparado:
+## Como usar
 
-```bash
-source .venv/env-local.sh
-```
+Siga esta ordem no primeiro uso. Para fotografar e gravar, basta receber o vídeo;
+os comandos de levantar e locomover são uma etapa separada.
 
-Esse script local configura as bibliotecas de Tk/PortAudio e ALSA. Ele não
-substitui `uv sync` nem faz parte da instalação em outra máquina. A presença
-do robô não é necessária para sincronizar dependências ou executar os testes.
-
-## Execução e configuração
-
-Na máquina de controle, conecte ao Wi-Fi AP do robô antes de executar:
+### 4. Conferir a instalação sem o robô
 
 ```bash
-uv run --locked go2-env --nivel-log DEBUG
-# Entradas equivalentes:
-uv run --locked python -m go2_env
-uv run --locked python foto_webrtc/teste_video.py
-```
-
-Os mesmos comandos estão disponíveis pelo `Makefile`:
-
-```bash
-make install
-make run
-make run ARGS="--nivel-log DEBUG"
-make window
-make diagnostico
-```
-
-`make diagnostico` conecta ao Go2 e consulta o modo atual e o estado informado
-pela API (`state`, `bodyHeight`, `speedLevel`, `gait`), lê uma amostra de
-`LowState` com temperaturas dos motores e resume as falhas ativas; não envia
-comandos de postura nem de movimento. Compartilhe a saída completa para
-investigar falhas de comunicação da API.
-
-Teste apenas a interface, sem conexão ou comandos:
-
-```bash
+uv run --locked go2-env --help
+uv run --locked python calibrar_camera_go2.py --verificar-dependencias
+uv run --locked python -c "import av; print(av.codec.Codec('libx264', 'w').name)"
 uv run --locked go2-env --testar-janela
 ```
 
-A execução normal também mantém a interface aberta quando o Go2 está
-inacessível. A conexão exibe **Conectando**, **Conectado**, **Desconectado** ou
-**Erro**. Em modo offline, confira o Wi-Fi/robô e pressione **F5** ou clique em
-**Reconectar**. O botão fica desabilitado durante a conexão e enquanto conectado;
-pedidos repetidos não criam novas threads nem tentativas simultâneas.
+**Resultado esperado:** lista de opções da aplicação, dependências com `OK`,
+encoder `libx264` disponível e uma janela de teste. Essa janela não conecta
+ao Go2 e não mostra sua câmera; feche com Esc antes de continuar.
+Se houver erro de Tkinter, Qt ou display, resolva a sessão gráfica primeiro.
 
-Cada reconexão usa um transporte novo na mesma thread `go2-rtc` e no mesmo loop
-asyncio. Leituras de vídeo e comandos da sessão anterior são cancelados ou
-descartados. Os comandos do robô ficam bloqueados sem conexão válida, e após
-reconectar é necessário **U/R** aceito para liberar a locomoção. Não há retry
-automático nem retomada de movimentos antigos.
+### 5. Conectar o computador ao Go2
 
-Falhas de rede, timeout e sinalização (incluindo `LocalSignalingPortError`)
-são recuperáveis e registradas no Loguru como `connection_recoverable`, com
-tipo de erro e número da tentativa. Bugs, dependências ausentes e outros erros
-críticos mantêm o encerramento coordenado e o diagnóstico `Falha nas threads`.
-
-Consulte todas as opções com `uv run --locked go2-env --help`. Exemplo:
+1. Ligue o Go2 e aguarde sua inicialização, em um local adequado para o ensaio.
+2. Confirme que o hotspot Wi-Fi do robô está disponível em modo AP.
+3. Nas configurações Wi-Fi do computador, conecte à rede do Go2 usando as
+   credenciais do seu equipamento. Nome da rede e senha dependem da configuração.
+4. Encerre outras sessões da câmera, incluindo o calibrador, antes de abrir a aplicação.
+5. Confira a rota para o endereço usado pelo projeto:
 
 ```bash
-uv run --locked go2-env --pasta-logs logs --pasta-saida capturas_go2 --timeout-pedido 5 --publicar-hz 20
+ip route get 192.168.12.1
+ping -c 3 192.168.12.1
 ```
 
-O padrão de captura permanece `foto_webrtc/capturas_go2/fotos/` e
-`foto_webrtc/capturas_go2/videos/`. Os logs ficam em `logs/`, relativos ao
-diretório de execução. Caminhos personalizados são definidos pelas opções acima.
+A rota deve usar a interface conectada ao Go2. Respostas ao ping ajudam a
+confirmar acesso, mas ausência de resposta não comprova que o WebRTC falhará.
+O Wi-Fi do robô pode não fornecer internet; as dependências já devem estar
+instaladas. Este modo usa o endereço **192.168.12.1**, sem servidor adicional.
 
-Os ajustes imutáveis ficam em `foto_webrtc/config.py` (`Config`). As constantes
-históricas de `teste_video.py` ainda definem os ganhos, atrasos de postura e
-padrões usados pela CLI.
+### 6. Abrir a câmera
 
-| Ajuste | Padrão | Uso |
-| --- | --- | --- |
-| `linear_gain` | `0.3` | Velocidade linear, m/s |
-| `angular_gain` | `0.5` | Velocidade angular, rad/s |
-| `publish_hz` | `20.0` | Cadência máxima dos comandos Move |
-| `request_timeout` | `5.0 s` | Prazo para resposta da API |
-| `connect_timeout` | `30.0 s` | Prazo da conexão WebRTC |
-| `disconnect_timeout` | `5.0 s` | Prazo da desconexão |
-| `input_timeout` | `0.3 s` | Watchdog do heartbeat do teclado |
-| `frame_timeout` | `2.0 s` | Validade de frames para foto/gravação |
-| `shutdown_timeout` | `10.0 s` | Prazo antes de reportar encerramento lento |
+Na raiz do projeto, veja se a calibração padrão existe:
 
-Firmware que exige AES pode usar a variável **`UNITREE_AES_128_KEY`**. A chave
-é passada ao driver sem ser registrada como configuração nos logs. Confira a
-[documentação de autenticação do driver](https://github.com/legion1581/unitree_webrtc_connect#readme).
-Não coloque chaves no código. O programa não carrega `.env` automaticamente.
+```bash
+ls calibracoes_go2/20261021_180527_uaywafbe/calibracao.npz
+```
 
-## Controle
-
-Clique na janela para dar foco ao teclado. Clique em **Levantar** ou pressione
-**U** e aguarde o indicador **PRONTO PARA ANDAR** antes de locomover.
-Código zero é aceitação pela API; observe a estabilidade
-física do robô antes de andar.
-
-A câmera ocupa uma área independente dos controles. O frame fica centralizado
-e se ajusta ao espaço disponível, preservando a proporção e todas as bordas.
-Ao maximizar ou reduzir a janela, a prévia acompanha o tamanho; fotos e MP4
-mantêm a resolução original. Conexão, permissão de locomoção e captura aparecem
-em áreas separadas. Os botões de postura ficam desabilitados durante uma ação.
-
-| Tecla | Ação |
+| Situação | Comando para iniciar |
 | --- | --- |
-| ↑ / ↓ ou W / S | Frente / trás enquanto segura |
-| ← / → ou Q / E | Virar à esquerda / direita enquanto segura |
-| A / D | Deslocamento lateral enquanto segura |
-| Espaço | Parar |
-| U / J / R | Levantar / deitar / recuperar |
-| B / botão Equilibrar | BalanceStand: preparar equilíbrio |
-| H / K | Aceno / amortecer juntas |
-| M | Consultar modo de movimento |
-| P | Salvar foto JPG |
-| V | Iniciar ou finalizar MP4 |
-| F5 / botão Reconectar | Tentar conectar novamente em modo offline |
-| Esc | Parar, finalizar gravação e encerrar |
+| NPZ padrão presente | `make run` |
+| NPZ ausente ou primeiro teste sem correção | `make run ARGS="--sem-correcao"` |
+| Usar outro NPZ pinhole | `make run ARGS="--calibracao caminho/calibracao.npz"` |
 
-Para virar no lugar, segure **←/→**, **Q/E** ou um dos botões **Virar** na
-interface. Para fazer uma curva andando, combine **↑** com **←** ou **→**.
-O controle **Velocidade do giro** ajusta a rotação entre 0,10 e 1,00, com
-padrão 0,50, tanto no teclado quanto nos botões. Soltar o botão ou tirar o
-ponteiro de cima dele encerra o giro solicitado pelo mouse. Os botões de giro
-só ficam disponíveis em **PRONTO PARA ANDAR**.
+Substitua `caminho/calibracao.npz` pelo arquivo real. Se não usar `make`,
+execute `uv run --locked go2-env` com as mesmas opções.
 
-Soltar as teclas, perder o foco ou perder o heartbeat da GUI solicita velocidade
-zero. Posturas suspendem a locomoção enquanto estão em andamento; depois de
-J/K, é necessário U/R aceito para liberá-la. Outra ação durante uma postura é
-rejeitada antes de entrar na fila, sem gerar outra parada. A soltura das teclas
-usa uma margem de 40 ms para filtrar os eventos de repetição do teclado no X11.
-Não há repetição automática de posturas ou reconexão
-que retome movimentos anteriores. Espaço interrompe a velocidade; não cancela
-uma postura que já foi aceita pelo robô.
+**Resultado esperado:** conexão em **Conectado** e imagem ao vivo. Com a
+calibração padrão compatível, a prévia exibe **CAMERA CORRIGIDA**. Se o robô
+não estiver acessível, a interface fica em modo offline: confira a rede e
+pressione F5 ou clique em Reconectar. Para iniciar sem correção depois de um
+erro no NPZ, feche a aplicação e execute o comando correspondente na tabela.
 
-Os modos `normal` e `mcf` são aceitos. Em `mcf`, o programa usa a tabela
-`SPORT_CMD_MCF` do driver e mantém esse modo, sem forçar uma troca para `normal`.
-Após U/R aceito em `mcf`, aguarda a postura e solicita `BalanceStand` (1002 no
-tópico sport). A locomoção só é liberada quando essa etapa também é aceita.
-O botão **Equilibrar (B)** permite solicitar essa etapa separadamente, sem
-repetir Levantar. A sequência após StandUp segue a
-[orientação do driver](https://github.com/legion1581/unitree_webrtc_connect/blob/master/examples/go2/data_channel/sportmode_mcf/sportmode_mcf.py).
-A consulta de modo não libera a locomoção. Código zero continua sendo
-aceitação da API e não comprova que o robô tenha ficado em pé. Se a API aceita
-e o robô continua deitado, encerre a interface e compartilhe a saída atual de
-`make diagnostico`, incluindo a consulta de estado.
+### 7. Tirar uma foto e gravar um vídeo
 
-Falhas recebidas em `errors`, `add_error` e `rm_error` são acompanhadas desde
-a sinalização, antes de `connect()` concluir. Assim os alertas iniciais de
-motor não se perdem. Falhas de motor (fontes 300–399) e de proteção de movimento
-(600) exibem **FALHA ATIVA NO ROBÔ**, bloqueiam novas posturas e velocidades,
-e mantêm a consulta de modo disponível. Uma falha removida não retoma movimentos:
-é necessário um novo comando explícito de postura. Os códigos são exibidos com
-fonte e valor hexadecimal, preservando os dados do firmware.
+1. Aguarde a imagem ao vivo atualizar e clique na janela para dar foco.
+2. Pressione **P** ou clique em **Foto**. Confira a mensagem `Foto salva`.
+3. Com correção ativa, a foto abre em outra janela. Use **Fechar foto** antes
+   de continuar com os atalhos da janela principal.
+4. Pressione **V** para iniciar uma gravação. Confira o indicador **REC**.
+5. Aguarde alguns segundos e pressione **V** novamente. Confira `Vídeo salvo`.
+6. Pressione **Esc** para encerrar e aguarde o programa voltar ao terminal.
 
-Se aparecerem erros como `306-10` e `309-4`, verifique os alarmes e as
-temperaturas no Unitree Go; não continue repetindo posturas para tentar limpar
-uma proteção. `GetState` com payload vazio não confirma estado nem temperatura.
-O diagnóstico tenta obter temperaturas por `LowState` durante até 3 segundos
-e informa explicitamente quando não recebe telemetria.
+| Saída padrão | Onde encontrar |
+| --- | --- |
+| Foto sem correção | `fotos/originais/foto_campo_*.jpg` |
+| Foto corrigida | `fotos/corrigidas/foto_corrigida_*.jpg` |
+| Original da foto corrigida | `fotos/originais/*_original.png` |
+| Vídeo, sem áudio | `foto_webrtc/capturas_go2/videos/video_campo_*.mp4` |
+| Logs da sessão | `logs/` |
 
-A parada depende do programa e da conexão; não substitui uma parada física de
-emergência. Falha, rejeição ou timeout de um Move ativo suspende a locomoção,
-invalida comandos antigos e solicita zero. Respostas tardias ficam nos logs e
-não reativam o controle.
+O `*` representa a data/hora adicionada ao nome, não um nome literal.
+Abra os arquivos no visualizador de imagens ou no reprodutor de vídeo do
+computador. Foto e gravação são recusadas sem frame recente ou quando a
+resolução não corresponde à calibração. Evite encerrar o processo à força
+para que o MP4 seja finalizado.
 
-## Arquitetura e padrões
+### 8. Controlar o robô pelo teclado ou pelos botões
 
-| Componente | Thread | Responsabilidade |
-| --- | --- | --- |
-| `JanelaCamera` | principal | Tkinter, teclado e exibição de PPM já processado |
-| `LocomotionWorker` | `go2-locomotion` | Converte snapshots do teclado em velocidades na cadência configurada |
-| `RobotWorker` | `go2-rtc` | Event loop asyncio exclusivo, estado de postura e envio serializado ao driver |
-| `CaptureWorker` | `go2-capture` | Aguarda frames pela ponte thread-safe do loop RTC; entrega frames sem processamento |
-| `VideoProcessor` | `go2-video` | OpenCV, redimensionamento, JPG e codificação/finalização MP4 |
-| coordenador de saída | `go2-shutdown` | Aguarda workers sem executar `join()` em callbacks Tk |
+Clique na janela para dar foco. Pressione **U** e aguarde **PRONTO PARA ANDAR**;
+observe também se o robô ficou fisicamente estável.
+
+| Tecla | Ação | Tecla | Ação |
+| --- | --- | --- | --- |
+| ↑ / ↓ ou W / S | Frente / trás | A / D | Movimento lateral |
+| ← / → ou Q / E | Girar | Espaço | Parar |
+| U / J / R | Levantar / deitar / recuperar | B | Equilibrar |
+| H / K | Aceno / amortecer juntas | M | Consultar modo |
+| P | Tirar foto | V | Iniciar / finalizar vídeo |
+| F5 | Reconectar | Esc | Parar e encerrar |
+
+Segure as teclas de locomoção para andar; solte para solicitar parada.
+O controle **Velocidade do giro** ajusta a rotação, com padrão 0,50.
+Sem conexão, a interface permanece aberta para reconectar com F5 ou pelo botão.
+Após reconectar, é necessário U/R aceito para liberar a locomoção.
+
+Fotos corrigidas abrem em uma janela separada e preservam o original em PNG.
+Ao sair, o programa tenta enviar parada, finaliza o MP4 e desconecta.
+A parada pelo programa depende da conexão e não substitui uma parada física.
+
+### 9. Usar em uma próxima sessão
+
+A instalação é feita uma vez. Nas próximas sessões, conecte ao Wi-Fi do Go2,
+abra o terminal, entre na pasta do projeto e execute o comando de sua escolha:
+
+```bash
+cd ~/projetos/go2_env
+make run
+```
+
+Adapte o `cd` se seu projeto estiver em outro local. Mantenha `--sem-correcao`
+quando não houver NPZ válido. Para investigar uma sessão que não funciona:
+
+| Objetivo | Comando |
+| --- | --- |
+| Ver opções | `uv run --locked go2-env --help` |
+| Consultar modo, estado, temperaturas e falhas | `make diagnostico` |
+| Exibir mais detalhes no console | `make run ARGS="--nivel-log DEBUG"` |
+
+Feche a aplicação antes de executar `make diagnostico`. Ele abre outra conexão
+para consultas, sem enviar comandos de postura ou movimento.
+
+## Calibração e imagens
+
+O primeiro experimento, em `correcao_imagem.py`, usava parâmetros fisheye fixos,
+CLAHE e nitidez. A versão atual usa **parâmetros calculados com fotos do próprio
+Go2**, aplicando a mesma correção à prévia, às fotos e aos vídeos.
+
+![Original, correção anterior e enquadramento revisado](docs/imagens/comparacao-correcao-camera.jpg)
+
+**Esquerda:** original. **Centro:** correção anterior. **Direita:** enquadramento
+revisado, preservando a proporção dos objetos e reduzindo o campo lateral.
+A imagem ilustra o ajuste; ainda é preciso avaliar a distorção residual nas bordas.
+
+### Resultado registrado em 21/10/2026
+
+| Modelo | Resolução | Vistas usadas | Tabuleiro | RMS de ajuste |
+| --- | --- | --- | --- | --- |
+| Pinhole | 1280 × 720 | 75 | 5 × 8 cantos internos | ≈ 0,569 px |
+
+O lado registrado de cada quadrado é **30 mm**. Os parâmetros completos estão no
+[relatório da calibração](calibracoes_go2/20261021_180527_uaywafbe/calibracao.json).
+O RMS foi medido nas imagens usadas no ajuste. Apenas **1,5% dos cantos** ficaram
+na faixa externa de 10% da imagem, então as bordas precisam de mais validação.
+
+### 1. Preparar e coletar
+
+Use um tabuleiro plano de **6 × 9 quadrados**, que produz **5 × 8 cantos internos**.
+Meça o lado real de um quadrado. Mantenha o Go2 parado e mova apenas o tabuleiro.
+Feche a aplicação de teleoperação e mantenha o computador no Wi-Fi do robô.
+O calibrador abre uma conexão dedicada ao vídeo, sem enviar postura ou locomoção.
+
+<img src="docs/imagens/tabuleiro-calibracao-go2.png" alt="Tabuleiro visto pela câmera do Go2 durante a coleta" width="560">
+
+```bash
+read -r -p "Lado medido de um quadrado, em mm: " QUADRADO_MEDIDO_MM
+uv run --locked python calibrar_camera_go2.py \
+  --conexao ap --modelo pinhole --quadrado-mm "$QUADRADO_MEDIDO_MM"
+```
+
+| Espaço | C | U | Q / Esc |
+| --- | --- | --- | --- |
+| Salva uma foto e verifica os cantos | Calcula a calibração | Remove a última foto da coleta | Sai sem calcular |
+
+Colete **20–30 vistas variadas**, cobrindo centro, bordas, distâncias e inclinações.
+O mínimo implementado é 10 vistas válidas. Fotos sem detecção ou quase repetidas
+são preservadas, mas não entram no ajuste. Após calcular, a nova sessão recebe
+`calibracao.npz` e `calibracao.json` em `calibracoes_go2/`.
+
+As fotos ficam em `fotos/fotos tabuleiro/`, com o identificador da sessão no
+nome. Quando houver vistas suficientes, pressione **C**, aguarde o cálculo
+terminar e anote o caminho do NPZ impresso no terminal. Confira modelo,
+resolução, quantidade de vistas e RMS no relatório JSON. Sair com Q/Esc antes
+de C preserva as fotos, mas não gera uma calibração concluída.
+
+### 2. Recalibrar fotos já salvas
+
+Esta etapa é alternativa à coleta ao vivo. Não exige robô conectado nem janela.
+Para a coleta de exemplo, se você tiver as imagens originais:
+
+```bash
+read -r -p "Lado medido de um quadrado, em mm: " QUADRADO_MEDIDO_MM
+uv run --locked python calibrar_camera_go2.py \
+  --imagens "fotos/fotos tabuleiro" \
+  --prefixo calibracao_20261021_093812_illc3whs_ \
+  --modelo pinhole --quadrado-mm "$QUADRADO_MEDIDO_MM"
+```
+
+Para sua coleta, ajuste a pasta e o prefixo aos arquivos que deseja usar.
+Cada execução cria uma pasta nova de resultados. O prefixo evita misturar
+sessões; a medida deve corresponder ao tabuleiro fotografado.
+
+### 3. Testar uma foto offline
+
+Se a coleta de exemplo estiver disponível:
+
+```bash
+uv run --locked python testar_correcao_camera_go2.py \
+  --imagem "fotos/fotos tabuleiro/calibracao_20261021_093812_illc3whs_vista_070.png" \
+  --calibracao calibracoes_go2/20261021_180527_uaywafbe/calibracao.npz \
+  --alpha 0
+```
+
+Substitua `--imagem` por uma foto original do mesmo stream para testar outra
+captura. O programa salva a corrigida, a comparação e um relatório; `--mostrar`
+abre a comparação. A vista 070 participou do ajuste: valide também fotos novas.
+
+### 4. Usar a nova calibração na aplicação
+
+Depois de fechar o calibrador, informe o caminho do NPZ gerado:
+
+```bash
+read -r -p "Caminho do novo calibracao.npz: " CALIBRACAO_NPZ
+uv run --locked go2-env --calibracao "$CALIBRACAO_NPZ"
+```
+
+Aguarde a imagem e confira **CAMERA CORRIGIDA**. Tire uma foto com P e compare
+com seu original em `fotos/originais/`. Avalie linhas conhecidas como retas,
+no centro e nas bordas, usando também fotos que não participaram do ajuste.
+O parâmetro `--calibracao` vale para essa execução; repita-o nas próximas
+sessões para continuar usando o arquivo novo.
+
+**Limites atuais:** a aplicação aceita NPZ pinhole com cinco coeficientes e exige
+a resolução da calibração. O calibrador também calcula fisheye, mas esse modelo
+não está integrado à aplicação. O padrão `alpha=0` reduz o campo de visão;
+`alpha=1` apresentou deformações fortes nas bordas deste conjunto.
+
+[Ver recalibração offline, parâmetros e detalhes da correção →](docs/guia-tecnico.md#calibração-e-correção-de-imagens)
+
+## Pastas do projeto
+
+```text
+go2_env/
+├── foto_webrtc/                  # interface, controle, conexão e vídeo
+│   ├── teste_video.py            # entrada da aplicação
+│   ├── application.py            # início e encerramento
+│   ├── gui.py                    # janela Tkinter
+│   ├── robot.py / transport.py   # estado do robô e comunicação WebRTC
+│   ├── video.py / calibration.py # captura, gravação e correção
+│   └── capturas_go2/videos/      # vídeos MP4
+├── src/go2_env/                  # comando go2-env
+├── calibrar_camera_go2.py        # coleta e cálculo dos parâmetros
+├── testar_correcao_camera_go2.py # comparação offline
+├── calibracoes_go2/              # sessões, NPZ e relatórios JSON
+├── testes_correcao_go2/           # relatórios de correção
+├── fotos/
+│   ├── originais/
+│   ├── corrigidas/comparacoes/
+│   └── fotos tabuleiro/          # coleta; corrigidas em subpastas próprias
+├── docs/                        # guia técnico e imagens do README
+├── tests/                       # testes offline
+├── logs/                        # logs JSONL
+├── pyproject.toml / uv.lock      # dependências
+└── .venv/                       # ambiente criado pelo uv
+```
+
+As pastas de saída são criadas conforme o uso. `--pasta-fotos` altera o destino
+das fotos; `--pasta-saida` altera a base de vídeos e, sem `--pasta-fotos`, das fotos.
+Os caminhos padrão são calculados a partir dos arquivos Python. Caminhos
+fornecidos na CLI são relativos ao terminal; use aspas em nomes com espaços.
+
+## Arquitetura C4
+
+O projeto separa interface, comunicação e processamento para manter a janela
+responsiva enquanto recebe vídeo e envia comandos.
 
 ```mermaid
 flowchart LR
-    GUI["Tkinter / thread principal"] -->|"fila: teclado recente"| Commands["Thread de locomoção"]
-    Commands -->|"fila: último Move"| RTC["Thread WebRTC / asyncio"]
-    GUI -->|"filas: ação e parada prioritária"| RTC
-    RTC <-->|"WebRTC: pedidos e respostas"| Robot["Unitree Go2"]
-    RTC -->|"fila: trilha + ponte recv thread-safe"| Capture["Thread de captura"]
-    Capture -->|"fila: frames recentes"| Video["Thread OpenCV / PyAV"]
-    GUI -->|"fila: foto / gravação"| Video
-    Video -->|"fila: preview PPM"| GUI
-    RTC -->|"filas: snapshots de estado"| GUI
-    RTC -->|"fila: estado do controle"| Commands
+    Operador["Operador"] -->|"Teclado e botões"| App["Aplicação Python no computador"]
+    App <-->|"HTTP local + WebRTC"| Go2["Unitree Go2"]
+    App -->|"Grava em disco"| Dados["Fotos, vídeos, calibração e logs"]
 ```
 
-- **Command:** mensagens imutáveis com IDs e parâmetros, sem acesso a widgets.
-- **Adapter:** `RobotTransport` permite substituir o WebRTC por um transporte
-  simulado nos testes. `WebRTCTransport` encapsula o protocolo e a correlação.
-- **Producer/Consumer:** filas `queue.Queue` limitadas e operações sem bloqueio
-  nos produtores. Teclado, preview e velocidade usam o item mais recente;
-  ações discretas usam FIFO e rejeição explícita quando a fila está cheia.
-- **Estado explícito:** snapshots imutáveis de conexão, modo, postura e permissão para
-  locomover. Somente `RobotWorker` altera o estado do robô.
-- **Facade:** `Application` conecta componentes e coordena início e encerramento.
-- **Template Method:** `Worker.run()` padroniza logs e exceções; cada componente
-  implementa sua tarefa em `work()`.
-
-O driver, o canal SCTP e `track.recv()` pertencem ao loop da thread RTC.
-A captura usa `asyncio.run_coroutine_threadsafe`; não compartilha objetos
-aiortc entre event loops. Conversão de imagem, escrita de fotos e encoding não
-ocorrem na GUI nem no loop RTC. O handshake HTTP bloqueante usa um executor
-separado, com timeouts de conexão/leitura e sem proxies para o IP local.
-
-Frames e velocidades antigos são descartados para limitar memória e latência.
-Uma geração no mailbox invalida movimentos pendentes ao parar ou solicitar
-postura; o lock protege a validação junto com o envio. A fila de parada é
-prioritária e não depende de espaço na fila de ações.
-
-## Observabilidade e diagnóstico de movimento
-
-O console mostra ações e falhas; os arquivos **JSONL** mantêm DEBUG, incluindo
-cada Move enviado e sua resposta. Os sinks do Loguru usam `enqueue=True`,
-rotação de **10 MB**, retenção de **14 dias** e `diagnose=False`. As mensagens
-pendentes são drenadas com `logger.complete()` antes de fechar os sinks, conforme
-[a API do Loguru](https://loguru.readthedocs.io/en/stable/api/logger.html).
-Falhas das bibliotecas via `logging` e avisos `errors/add_error/rm_error` do
-robô também entram no arquivo.
-
-Os campos ficam em `record.extra`:
-
-| Campo | Significado |
+| Nível C4 | Representação no projeto |
 | --- | --- |
-| `session_id`, `component`, `event` | Sessão, componente e etapa do fluxo |
-| `command_id`, `parent_command_id` | Comando e vínculo de consultas/paradas auxiliares com a ação |
-| `request_id`, `topic`, `api_id` | Identidade usada no protocolo WebRTC |
-| `parameters` | Parâmetros reais enviados, como `x/y/z` |
-| `queue_ms` | Tempo entre criação e envio |
-| `duration_ms` | Tempo desde o envio até resposta/timeout/cancelamento |
-| `status`, `response` | Resultado e envelope de resposta recebido |
+| **C1 · Contexto** | Operador, aplicação e Go2, como no diagrama acima |
+| **C2 · Contêineres** | Aplicação desktop, ferramentas CLI e armazenamento em arquivos |
+| **C3 · Componentes** | Interface, workers, transporte e processamento de vídeo |
+| **C4 · Código** | Classes e contratos: `Application`, `RobotWorker`, `RobotTransport`, `VideoProcessor` e `CameraCorrection` |
 
-`duration_ms` mede a espera da API, **não a duração física do movimento**.
-`accepted` significa resposta com código zero, sem comprovar deslocamento.
-`rejected`, `malformed`, `timeout`, `late_response` e `send_failed` distinguem as
-falhas. Pedidos restantes são registrados como `cancelled` ao desconectar;
-`superseded` indica substituição no limite do registro pendente.
-
-Para o problema de falta de movimento:
-
-1. Confira `connected` e eventuais exceções de autenticação/conexão. Compare
-   `driver_version`, estado do canal, API e tópico registrados.
-2. Pressione **M** e confira `robot_state.mode` e o modo exibido na janela.
-   `normal` e `mcf` permitem comandos de postura; `mcf` é preservado. Para
-   outros modos, U/R consulta e solicita `normal` antes da postura, espera
-   uma margem de 5 segundos e consulta novamente para confirmar a troca.
-3. Se aparece `movement_inhibited`, confira `connected`, `busy`, `mode` e a
-   mensagem de estado; o comando não foi enviado porque o controle está suspenso.
-   `movement_started` no console registra o início de uma solicitação de
-   velocidade pelo teclado. Se apenas Move com `x/y/z` iguais a zero foi
-   enviado, o robô recebeu paradas, sem solicitação de deslocamento.
-4. Filtre `command_sent` e `command_result` pelo mesmo `command_id/request_id`.
-   Em `timeout`, o programa não reconheceu uma resposta válida no prazo: a ação
-   pode ter chegado ao robô. Em `rejected`, inspecione o código em `response`
-   e os `robot_error`. O tópico de resposta (`response_topic`) termina em
-   `/response`, enquanto o envio (`topic`) termina em `/request`; o adapter
-   valida essa correspondência junto com o ID do pedido e a API.
-5. Se Move aparece como `accepted`, mas o robô não anda, os logs confirmam a
-   resposta da API. Investigue postura real, modo/firmware e outros clientes de
-   controle; não conclua que houve deslocamento somente pelo código zero.
-
-O registro pendente do adapter é limitado a **256** pedidos e guarda até **64**
-pedidos expirados para reconhecer respostas tardias. Move usa o envelope de
-requisição do driver, com IDs únicos, mas não cria Futures no resolver do SDK.
-Isso evita acumulação e `InvalidStateError` quando respostas chegam depois de
-um timeout. O listener adicional preserva o processamento normal do driver.
-O buffer SCTP também é verificado antes de enviar velocidades não nulas.
-
-## Captura e encerramento
-
-MP4 mantém a resolução do stream, sem áudio, com linha do tempo iniciada em
-zero e precisão de 1/30 s. Frames acima de 30 fps são amostrados; lacunas de
-tempo são preservadas quando frames são descartados. O indicador REC aparece
-somente no preview. É possível tirar foto durante uma gravação.
-
-Ao fechar, pressionar Esc ou receber SIGINT/SIGTERM, a aplicação marca o Event
-de encerramento, cancela ações assíncronas, tenta enviar zero, fecha o MP4 com
-flush do encoder, desliga vídeo e desconecta. Os workers não são daemon e são
-aguardados antes de destruir o Tk e drenar os logs. Exceções em workers ou
-callbacks da interface provocam a mesma parada coordenada.
-
-Se um recurso nativo demorar além do prazo de saída, a GUI informa a demora e
-os logs listam as threads pendentes. Python não pode matar uma thread presa
-em I/O nativo com segurança; a aplicação aguarda seu retorno. Encerrar o
-processo à força pode impedir o fechamento do MP4 e o envio de parada.
-
-## Estrutura
-
-```text
-foto_webrtc/
-├── teste_video.py      # CLI e constantes históricas
-├── application.py      # Facade e ciclo de vida
-├── gui.py              # View Tkinter
-├── config.py           # configuração imutável
-├── models.py           # mensagens Command e snapshots
-├── channels.py         # filas, prioridade e invalidação
-├── commands.py         # worker de locomoção e watchdog
-├── robot.py            # estado e worker RTC
-├── transport.py        # Adapter WebRTC e respostas correlacionadas
-├── signaling.py        # handshake HTTP com timeout
-├── video.py            # captura, OpenCV, JPG e MP4
-├── workers.py          # ciclo de vida comum das threads
-├── observability.py    # Loguru, JSONL e logs de bibliotecas
-├── foto_webrtc.py      # exemplo histórico de fotos
-├── correcao_imagem.py  # exemplo histórico de fisheye
-├── teste.py            # teleoperação anterior
-└── testemov.py         # demonstração com movimentos automáticos
-src/go2_env/            # go2-env e python -m go2_env
-tests/                  # protocolo, concorrência, GUI, vídeo, logs e CLI
-pyproject.toml          # declaração de dependências e empacotamento
-uv.lock                 # resolução versionada das dependências
-.python-version         # Python usado pelo uv
+```mermaid
+flowchart LR
+    GUI["Tkinter<br/>thread principal"] -->|"Entrada"| Controle["LocomotionWorker"]
+    Controle -->|"Fila de comandos"| RTC["RobotWorker<br/>asyncio / WebRTC"]
+    GUI -->|"Posturas e parada"| RTC
+    RTC <-->|"WebRTC"| Go2["Go2"]
+    RTC --> Captura["CaptureWorker"]
+    Captura --> Video["VideoProcessor<br/>OpenCV + PyAV"]
+    Video -->|"Prévia"| GUI
+    Video -->|"Fotos / MP4"| Disco["Arquivos"]
 ```
 
-Os exemplos históricos continuam disponíveis. `testemov.py` move o robô
-automaticamente; não faz parte da suíte de testes nem usa a nova arquitetura.
+Tkinter permanece na thread principal; o driver e a recepção WebRTC usam um
+único loop asyncio. Processamento e gravação ficam em outro worker. Filas
+limitadas mantêm dados recentes, e a parada tem prioridade sobre movimentos.
+`Application` coordena a criação e o encerramento dos componentes.
 
-## Validação
+[Ver os quatro diagramas C4 e os padrões de implementação →](docs/guia-tecnico.md#arquitetura-c4)
+
+## Problemas e soluções
+
+A tabela reúne correções do projeto e orientações de diagnóstico.
+
+| Problema | Solução |
+| --- | --- |
+| Dependência instalada, mas import falha | Executar com `uv run --locked` para usar `.venv`. |
+| Foto não encontrada ou salva em lugar inesperado | Caminhos padrão com `Path(__file__)`; na CLI, conferir pasta atual e usar aspas. |
+| Arquivo de calibração ausente | Informar um NPZ válido ou iniciar com `--sem-correcao`. |
+| Falha de conexão / `LocalSignalingPortError` | Conferir Wi-Fi AP, endereço do robô e autenticação; tentar F5. |
+| Interface lenta ou frames acumulados | Workers separados e filas que descartam frames antigos. |
+| Robô recebe resposta, mas não anda | Conferir postura, modo, falhas e `make diagnostico`; aceitação da API não comprova movimento físico. |
+| Proporção dos objetos alterada na correção | Centralizar o ponto principal da matriz de saída e preservar a relação `fx/fy`. |
+| Resolução diferente do NPZ | A aplicação exibe o original e bloqueia foto/vídeo até receber frames compatíveis. |
+| MP4 incompleto ao encerrar | Finalização do encoder e fechamento do arquivo na saída coordenada. |
+
+Os logs JSONL em `logs/` relacionam comandos, respostas e timeouts por IDs.
+Falhas de motor/proteção bloqueiam postura e locomoção. Uma reconexão descarta
+comandos antigos e não retoma movimentos automaticamente.
+
+Se o firmware exigir chave AES, a aplicação lê `UNITREE_AES_128_KEY` e o calibrador
+lê `GO2_AES_128_KEY`. Nenhum deles carrega `.env` automaticamente.
+
+[Ver diagnóstico detalhado, logs e demais soluções →](docs/guia-tecnico.md#problemas-encontrados-e-soluções)
+
+## Testes e reprodução
 
 ```bash
 uv lock --check
-uv sync --locked --check
+uv pip check --python .venv/bin/python
 uv run --locked python -m unittest discover -s tests -v
-uv run --locked python -m compileall -q src foto_webrtc tests
-uv run --locked go2-env --help
-uv pip check
 ```
 
-Os testes usam transportes simulados e frames sintéticos. Testam rejeições,
-timeouts/respostas tardias, prioridade de parada, watchdog, afinidade de
-threads, falhas, encerramento, logs e arquivos JPG/MP4 reais. Os testes de GUI
-requerem Tkinter e `DISPLAY` e são ignorados quando não há sessão gráfica.
-Podem ser executados com um display virtual instalado:
+A suíte usa transportes simulados e imagens sintéticas, sem conectar ao Go2.
+Na verificação de **11/11/2026**, foram executados **93 testes com sucesso**;
+uma classe de testes gráficos foi ignorada por falta de display acessível.
+Isso não valida a operação física do robô.
 
-```bash
-xvfb-run -a uv run --locked python -m unittest discover -s tests -v
-```
+Para reproduzir em outra máquina, compartilhe o código e o lock. Para usar a
+correção, inclua também o NPZ; para recalcular aquela calibração, forneça as
+fotos originais. A pasta `fotos/` é ignorada pelo Git e não acompanha o clone.
+As imagens deste README ficam em `docs/imagens/`. Alterações locais precisam
+estar versionadas para acompanhar o repositório.
 
-Nenhum teste da suíte conecta ao Go2 ou comprova locomoção física. Em campo,
-observe as respostas de M/U antes de andar, faça movimentos breves e confira
-os registros. Valide fotos, MP4 e saída com Esc durante uma gravação.
-
-## Versionamento
-
-`.gitignore` exclui ambientes virtuais, configuração privada, logs e capturas.
-Revise `git status` e `git diff` antes de publicar. Não force a inclusão de dados
-privados. Esta implementação não configura remote, cria commit ou executa push.
+[Guia técnico completo](docs/guia-tecnico.md) · [Driver WebRTC](https://github.com/legion1581/unitree_webrtc_connect) · [Instalação do uv](https://docs.astral.sh/uv/getting-started/installation/) · [Calibração OpenCV](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html) · [Modelo C4](https://c4model.com/diagrams)

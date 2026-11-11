@@ -24,12 +24,13 @@ class Application:
         self.ui_states, self.command_states, self.video_states = (Queue(maxsize=1) for _ in range(3))
         self.tracks, self.frames = Queue(maxsize=1), Queue(maxsize=2)
         self.video_actions = Queue(maxsize=16)
+        self.photos = Queue(maxsize=1)
         kwargs = {"transport_factory": transport_factory} if transport_factory is not None else {}
         self.robot = RobotWorker(config, self.stop_event, self.mailbox, self.tracks,
                                  self.ui_states, self.command_states, **kwargs)
         self.workers = [
             VideoProcessor(config, self.stop_event, self.frames, self.previews,
-                           self.video_actions, self.video_states, self.sizes),
+                           self.video_actions, self.video_states, self.sizes, self.photos),
             CaptureWorker(self.stop_event, self.robot, self.tracks, self.frames),
             LocomotionWorker(config, self.stop_event, self.inputs, self.command_states, self.mailbox),
             self.robot,
@@ -109,6 +110,9 @@ class Application:
             if preview is not None:
                 self.window.mostrar(preview)
                 self.frame_ts = preview.received_at
+            photo = get_latest(self.photos)
+            if photo is not None and hasattr(self.window, "mostrar_foto"):
+                self.window.mostrar_foto(photo)
             self.video_state = get_latest(self.video_states, self.video_state)
             camera = "OK" if self.frame_ts and time.monotonic() - self.frame_ts < self.config.frame_timeout else "sem imagens recentes"
             if not self.robot_state.connected:

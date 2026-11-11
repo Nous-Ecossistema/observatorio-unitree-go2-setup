@@ -145,7 +145,7 @@ class QueueTests(unittest.TestCase):
                     break
                 time.sleep(0.002)
             self.assertIsNotNone(moving)
-            self.assertEqual(moving.parameter, {"x": 0.3, "y": 0.3, "z": 0.5})
+            self.assertEqual(moving.parameter, {"x": 0.5, "y": 0.5, "z": 0.5})
             time.sleep(0.07)
             self.assertEqual(bus.take().parameter, {"x": 0.0, "y": 0.0, "z": 0.0})
         finally:
@@ -156,11 +156,11 @@ class QueueTests(unittest.TestCase):
     def test_arrow_keys_move_and_aliases_do_not_double_speed(self):
         config = Config(publish_hz=100)
         for keys, expected in [
-            ({"up", "w"}, (0.3, 0, 0)), ({"down"}, (-0.3, 0, 0)),
+            ({"up", "w"}, (0.5, 0, 0)), ({"down"}, (-0.5, 0, 0)),
             ({"left", "q"}, (0, 0, 0.5)), ({"right", "e"}, (0, 0, -0.5)),
-            ({"a"}, (0, 0.3, 0)), ({"d"}, (0, -0.3, 0)),
-            ({"up", "right"}, (0.3, 0, -0.5)),
-            ({"up", "right", "q"}, (0.3, 0, 0)),
+            ({"a"}, (0, 0.5, 0)), ({"d"}, (0, -0.5, 0)),
+            ({"up", "right"}, (0.5, 0, -0.5)),
+            ({"up", "right", "q"}, (0.5, 0, 0)),
             ({"turn_left"}, (0, 0, 0.5)), ({"turn_right"}, (0, 0, -0.5)),
         ]:
             with self.subTest(keys=keys):
@@ -224,7 +224,7 @@ class LifecycleTests(unittest.TestCase):
         self.window.root.after(230, self.window.on_close)
         app.run()
         transport = FakeTransport.instances[0]
-        self.assertTrue(any(c.name == "Move" and c.parameter.get("x") == 0.3 for c, _ in transport.calls))
+        self.assertTrue(any(c.name == "Move" and c.parameter.get("x") == 0.5 for c, _ in transport.calls))
         self.assertEqual({name for _, name in transport.calls}, {"go2-rtc"})
         self.assertFalse(any(transport.calls[-1][0].parameter.values()))
         self.assertTrue(self.window.preview_threads)
@@ -269,13 +269,29 @@ class LifecycleTests(unittest.TestCase):
 
     def test_arrow_drives_after_posture_finishes_and_stops_on_release(self):
         app = Application(self.config, self.window, FakeTransport)
-        self.window.root.after(60, lambda: app.action("StandUp"))
-        self.window.root.after(130, lambda: self.window.pressionadas.add("up"))
-        self.window.root.after(240, lambda: self.window.pressionadas.clear())
-        self.window.root.after(350, self.window.on_close)
+
+        def drive_when_ready():
+            if not app.robot.state.allowed:
+                self.window.root.after(10, drive_when_ready)
+                return
+            self.window.pressionadas.add("up")
+            self.window.root.after(110, self.window.pressionadas.clear)
+            self.window.root.after(220, self.window.on_close)
+
+        def stand_when_ready():
+            if not app.robot.ready.is_set() or app.robot.state.busy:
+                self.window.root.after(10, stand_when_ready)
+                return
+            if not app.action("StandUp"):
+                self.window.root.after(10, stand_when_ready)
+                return
+            self.window.root.after(10, drive_when_ready)
+
+        self.window.root.after(10, stand_when_ready)
+        self.window.root.after(2000, self.window.on_close)
         app.run()
         calls = [command for command, _ in FakeTransport.instances[0].calls]
-        moving = [i for i, c in enumerate(calls) if c.name == "Move" and c.parameter.get("x") == 0.3]
+        moving = [i for i, c in enumerate(calls) if c.name == "Move" and c.parameter.get("x") == 0.5]
         self.assertTrue(moving)
         self.assertTrue(any(c.name == "Move" and not any(c.parameter.values()) for c in calls[moving[-1] + 1:]))
 

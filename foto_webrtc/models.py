@@ -3,6 +3,7 @@
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -72,6 +73,13 @@ class VideoFrame:
 class Preview:
     ppm: bytes
     received_at: float
+
+
+@dataclass(frozen=True)
+class PhotoResult:
+    ppm: bytes
+    path: Path
+    original_path: Path | None = None
 
 
 @dataclass(frozen=True)

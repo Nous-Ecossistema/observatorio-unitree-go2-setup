@@ -1,0 +1,9 @@
+{
+  "board_inner_corners": [
+    5,
+    8
+  ],
+  "square_size_mm": 30.0,
+  "model": "pinhole",
+  "source": "images"
+}

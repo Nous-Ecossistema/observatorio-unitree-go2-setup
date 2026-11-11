@@ -2,6 +2,7 @@ import asyncio
 import cv2
 import numpy as np
 import time
+from pathlib import Path
 from unitree_webrtc_connect import UnitreeWebRTCConnection, WebRTCConnectionMethod
 from aiortc import MediaStreamTrack
 
@@ -95,8 +96,11 @@ async def main():
                     break
                 elif key == 32: # Barra de ESPAÇO
                     filename = f"foto_campo_fisheye_{photo_count}_{int(time.time())}.jpg"
+                    path = Path(__file__).resolve().parent.parent / "fotos" / "corrigidas" / filename
+                    path.parent.mkdir(parents=True, exist_ok=True)
                     # Salva em qualidade JPEG máxima (100)
-                    cv2.imwrite(filename, frame_corrigido, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
+                    cv2.imwrite(str(path), frame_corrigido, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
+                    filename = str(path)
                     print(f"Foto corrigida salva com sucesso! Arquivo: {filename}")
                     photo_count += 1
 

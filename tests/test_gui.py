@@ -238,7 +238,25 @@ class GuiTests(unittest.TestCase):
             self.window.root.after(550, self.window.fechar)
             app.run()
             self.assertEqual(len(heartbeats), 5)
-            self.assertTrue(list(Path(temp).glob("fotos/*.jpg")))
+            self.assertTrue(list(Path(temp).glob("fotos/originais/*.jpg")))
             self.assertTrue(list(Path(temp).glob("videos/*.mp4")))
             self.assertIsNotNone(self.window.imagem)
             self.assertFalse(any(worker.is_alive() for worker in app.workers))
+
+    def test_captured_photo_opens_updates_and_reopens_without_replacing_live_preview(self):
+        from foto_webrtc.models import PhotoResult
+
+        ppm = b"P6\n80 60\n255\n" + bytes([100, 110, 120]) * (80 * 60)
+        photo = PhotoResult(ppm, Path("foto_corrigida.jpg"), Path("original.png"))
+        self.window.mostrar_foto(photo)
+        self.window.root.update()
+        popup = self.window.photo_window
+        self.assertEqual(popup.title(), "Go2 - Foto corrigida")
+        self.assertIsNone(self.window.imagem)
+        self.assertIn("original.png", self.window.photo_path["text"])
+        self.window.mostrar_foto(PhotoResult(ppm, Path("segunda.jpg")))
+        self.assertIs(self.window.photo_window, popup)
+        self.assertIn("segunda.jpg", self.window.photo_path["text"])
+        popup.destroy()
+        self.window.mostrar_foto(photo)
+        self.assertTrue(self.window.photo_window.winfo_exists())

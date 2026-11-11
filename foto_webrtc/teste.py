@@ -28,6 +28,7 @@ Observação:
 import asyncio
 import json
 import time
+from pathlib import Path
 
 import cv2
 from aiortc import MediaStreamTrack
@@ -185,7 +186,10 @@ async def main():
 
             elif key == ord("p") and ultimo_frame is not None:
                 filename = f"foto_campo_{photo_count}_{int(time.time())}.jpg"
-                cv2.imwrite(filename, ultimo_frame)
+                path = Path(__file__).resolve().parent.parent / "fotos" / "originais" / filename
+                path.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(path), ultimo_frame)
+                filename = str(path)
                 print(f"\nFoto salva com sucesso! Arquivo: {filename}")
                 photo_count += 1
 

@@ -20,6 +20,8 @@ class JanelaCamera:
         self.pressionadas = set()
         self.solturas = {}
         self.imagem = None
+        self.photo_window = None
+        self.photo_image = None
         self.fechada = False
         self.on_action = lambda action: None
         self.on_close = lambda: self.root.quit()
@@ -180,6 +182,26 @@ class JanelaCamera:
         self.imagem = tk.PhotoImage(data=preview.ppm, format="PPM")
         self.preview.itemconfigure(self.preview_image, image=self.imagem, state="normal")
         self.preview.itemconfigure(self.preview_message, state="hidden")
+
+    def mostrar_foto(self, photo):
+        if self.photo_window is None or not self.photo_window.winfo_exists():
+            self.photo_window = tk.Toplevel(self.root)
+            self.photo_window.configure(bg="#111827")
+            self.photo_label = tk.Label(self.photo_window, bg="#080d16")
+            self.photo_label.pack(padx=10, pady=10)
+            self.photo_path = tk.Label(self.photo_window, bg="#111827", fg="#e5e7eb",
+                                       wraplength=900, justify="left")
+            self.photo_path.pack(padx=10, pady=(0, 10))
+            tk.Button(self.photo_window, text="Fechar foto", command=self.photo_window.destroy).pack(pady=(0, 10))
+            self.photo_window.bind("<Escape>", lambda event: self.photo_window.destroy())
+        self.photo_window.title("Go2 - Foto corrigida" if photo.original_path else "Go2 - Foto original")
+        self.photo_image = tk.PhotoImage(master=self.photo_window, data=photo.ppm, format="PPM")
+        self.photo_label.configure(image=self.photo_image)
+        details = f"Foto salva: {photo.path}"
+        if photo.original_path:
+            details += f"\nOriginal salvo: {photo.original_path}"
+        self.photo_path.configure(text=details)
+        self.photo_window.lift()
 
     def _enquadrar(self, evento):
         for item in (self.preview_image, self.preview_message):

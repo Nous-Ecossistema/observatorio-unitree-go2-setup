@@ -70,7 +70,7 @@ class VideoTests(unittest.TestCase):
         self.processor._preview()
         self.assertTrue(np.all(self.processor.image == 128))
         self.processor._stop_video()
-        images = list(Path(self.temp.name).glob("fotos/*.jpg"))
+        images = list(Path(self.temp.name).glob("fotos/originais/*.jpg"))
         self.assertEqual(len(images), 1)
         image = cv2.imread(str(images[0]))
         self.assertEqual(image.shape, (60, 80, 3))
@@ -150,7 +150,15 @@ class VideoTests(unittest.TestCase):
 
         window = FakeWindow()
         app = Application(Config(), window, Transport)
-        window.root.after(100, window.on_close)
+        deadline = time.monotonic() + 2
+
+        def close_after_receiving():
+            if owner or time.monotonic() >= deadline:
+                window.on_close()
+            else:
+                window.root.after(10, close_after_receiving)
+
+        window.root.after(10, close_after_receiving)
         app.run()
         self.assertTrue(owner)
         self.assertEqual(set(owner), {"go2-rtc"})

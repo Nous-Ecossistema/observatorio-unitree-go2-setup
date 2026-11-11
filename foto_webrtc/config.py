@@ -7,9 +7,12 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Config:
     output_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent / "capturas_go2")
+    photo_dir: Path | None = None
     log_dir: Path = field(default_factory=lambda: Path("logs"))
     log_level: str = "INFO"
-    linear_gain: float = 0.3
+    calibration_path: Path | None = None
+    correction_alpha: float = 0.0
+    linear_gain: float = 0.5
     angular_gain: float = 0.5
     publish_hz: float = 20.0
     request_timeout: float = 5.0
@@ -22,6 +25,14 @@ class Config:
     posture_delays: tuple = (("StandUp", 3.0), ("BalanceStand", 1.0), ("StandDown", 3.0),
                              ("RecoveryStand", 5.0), ("Hello", 2.0), ("Damp", 0.5))
 
+    @property
+    def photo_root(self):
+        if self.photo_dir is not None:
+            return self.photo_dir
+        if self.output_dir == Path(__file__).resolve().parent / "capturas_go2":
+            return Path(__file__).resolve().parent.parent / "fotos"
+        return self.output_dir / "fotos"
+
     def __post_init__(self):
         import math
 
@@ -33,3 +44,5 @@ class Config:
                 raise ValueError(f"{name} deve ser positivo e finito")
         if self.publish_hz > 100:
             raise ValueError("publish_hz deve ser no máximo 100")
+        if not 0 <= self.correction_alpha <= 1:
+            raise ValueError("correction_alpha deve estar entre 0 e 1")
