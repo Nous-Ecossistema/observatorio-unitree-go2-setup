@@ -1,0 +1,219 @@
+{
+  "calibration": "/home/lais/go2_env/calibracoes_go2/20261021_180527_uaywafbe/calibracao.npz",
+  "image_size": [
+    1280,
+    720
+  ],
+  "previous_output_K": [
+    [
+      572.6929722004644,
+      0.0,
+      617.7375750074966
+    ],
+    [
+      0.0,
+      738.8797422949093,
+      345.513101552383
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "updated_output_K": [
+    [
+      771.6386418167144,
+      0.0,
+      639.5
+    ],
+    [
+      0.0,
+      768.7907235979251,
+      359.5
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "previous_axis_scales": [
+    0.7092138541642684,
+    0.9184065033608583
+  ],
+  "updated_axis_scales": [
+    0.9555850023480865,
+    0.9555850023480865
+  ],
+  "detected_corner_count": 3000,
+  "outer_10_percent_corner_count": 45,
+  "outer_10_percent_corner_fraction": 0.015,
+  "model_experiments": {
+    "pinhole": {
+      "all_rms": 0.5691141818499502,
+      "train_rms": 0.6083574329092265,
+      "validation_rms": 0.4953863388629987,
+      "K": [
+        [
+          807.503926830816,
+          0.0,
+          629.345567460725
+        ],
+        [
+          0.0,
+          804.5236391412946,
+          348.1653349511376
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "D": [
+        -0.37817451835318466,
+        0.1574042751028351,
+        -0.0007469606664256167,
+        -0.0003625312257247175,
+        -0.03435436766639963
+      ]
+    },
+    "pinhole_k3_fixo": {
+      "all_rms": 0.5716692589633293,
+      "train_rms": 0.6090393726369082,
+      "validation_rms": 0.5077927087285093,
+      "K": [
+        [
+          807.4351115296213,
+          0.0,
+          630.2127314167939
+        ],
+        [
+          0.0,
+          804.4903517413505,
+          348.06507581867965
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "D": [
+        -0.3686750396152944,
+        0.11893507413294323,
+        -0.0006891883142775843,
+        -0.0004481405213440836,
+        0.0
+      ]
+    },
+    "racional": {
+      "all_rms": 0.5687353495812001,
+      "train_rms": 0.6077023266976747,
+      "validation_rms": 0.4928308969473256,
+      "K": [
+        [
+          807.5749201603688,
+          0.0,
+          629.6687575069252
+        ],
+        [
+          0.0,
+          804.5859626292231,
+          348.2615691567237
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "D": [
+        -6.40787363233547,
+        10.330458948251582,
+        -0.0007790654279355251,
+        -0.00036418345630228824,
+        1.3676224280898452,
+        -6.021984446238987,
+        7.808025706157188,
+        5.671139703310852,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fisheye": {
+      "all_rms": 0.5704329974408691,
+      "train_rms": 0.6085894358334714,
+      "validation_rms": 0.513941268735754,
+      "K": [
+        [
+          807.4402981548978,
+          0.0,
+          627.4696830224885
+        ],
+        [
+          0.0,
+          804.3632803422233,
+          346.1510577042584
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "D": [
+        -0.04637462060039441,
+        -0.06749241527496244,
+        -0.05869893034894309,
+        0.11890073271183722
+      ]
+    }
+  },
+  "internal_split": {
+    "training_views": 50,
+    "held_out_views": 25,
+    "group_size": 5,
+    "held_out_group_modulo_3": 1
+  },
+  "rational_denominator_positive_real_roots_r_squared": [],
+  "decision": "Keep measured K/D; preserve focal ratio by centering the output principal point. Model experiments are not promoted.",
+  "limits": "Narrower horizontal field. This framing change does not prove zero residual distortion. More checkerboard edge coverage and independent validation are needed.",
+  "photos": [
+    {
+      "original": "/home/lais/go2_env/fotos/originais/foto_corrigida_20261028_084356_829267_original.png",
+      "previous": "/home/lais/go2_env/fotos/corrigidas/foto_corrigida_20261028_084356_829267.jpg",
+      "updated": "/home/lais/go2_env/fotos/corrigidas/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084356_829267_revisada.png",
+      "comparison": "/home/lais/go2_env/fotos/corrigidas/comparacoes/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084356_829267_comparacao.jpg"
+    },
+    {
+      "original": "/home/lais/go2_env/fotos/originais/foto_corrigida_20261028_084431_001823_original.png",
+      "previous": "/home/lais/go2_env/fotos/corrigidas/foto_corrigida_20261028_084431_001823.jpg",
+      "updated": "/home/lais/go2_env/fotos/corrigidas/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084431_001823_revisada.png",
+      "comparison": "/home/lais/go2_env/fotos/corrigidas/comparacoes/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084431_001823_comparacao.jpg"
+    },
+    {
+      "original": "/home/lais/go2_env/fotos/originais/foto_corrigida_20261028_084625_788928_original.png",
+      "previous": "/home/lais/go2_env/fotos/corrigidas/foto_corrigida_20261028_084625_788928.jpg",
+      "updated": "/home/lais/go2_env/fotos/corrigidas/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084625_788928_revisada.png",
+      "comparison": "/home/lais/go2_env/fotos/corrigidas/comparacoes/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084625_788928_comparacao.jpg"
+    },
+    {
+      "original": "/home/lais/go2_env/fotos/originais/foto_corrigida_20261028_084633_983629_original.png",
+      "previous": "/home/lais/go2_env/fotos/corrigidas/foto_corrigida_20261028_084633_983629.jpg",
+      "updated": "/home/lais/go2_env/fotos/corrigidas/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084633_983629_revisada.png",
+      "comparison": "/home/lais/go2_env/fotos/corrigidas/comparacoes/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084633_983629_comparacao.jpg"
+    },
+    {
+      "original": "/home/lais/go2_env/fotos/originais/foto_corrigida_20261028_084710_153669_original.png",
+      "previous": "/home/lais/go2_env/fotos/corrigidas/foto_corrigida_20261028_084710_153669.jpg",
+      "updated": "/home/lais/go2_env/fotos/corrigidas/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084710_153669_revisada.png",
+      "comparison": "/home/lais/go2_env/fotos/corrigidas/comparacoes/revisao_bordas_t5n8p55k_foto_corrigida_20261028_084710_153669_comparacao.jpg"
+    }
+  ]
+}

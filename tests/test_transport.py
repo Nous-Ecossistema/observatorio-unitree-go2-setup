@@ -5,9 +5,10 @@ import json
 import unittest
 from queue import Queue
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from loguru import logger
+from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
 
 from foto_webrtc.config import Config
 from foto_webrtc.models import Command
@@ -20,8 +21,9 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.sink = logger.add(lambda message: self.records.append(message.record), level="DEBUG")
         self.failure = Mock()
         self.transport = WebRTCTransport(Config(request_timeout=0.05), Queue(1), self.failure)
-        self.transport.topics = {"SPORT_MOD": "sport", "MOTION_SWITCHER": "mode"}
-        self.transport.apis = {"Move": 1008, "StandUp": 1004}
+        self.transport.topics = RTC_TOPIC
+        self.transport.apis = SPORT_CMD
+        self.transport.mcf_apis = SPORT_CMD_MCF
         self.channel = SimpleNamespace(readyState="open", bufferedAmount=0)
         self.transport.channel = self.channel
         self.transport.pub_sub = SimpleNamespace(publish_without_callback=Mock())
@@ -29,9 +31,10 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         logger.remove(self.sink)
 
-    def reply(self, request_id, code=0, api=1008, topic="sport"):
+    def reply(self, request_id, code=0, api=1008, topic="rt/api/sport/response", data=None):
         return json.dumps({"type": "res", "topic": topic, "data": {
-            "header": {"identity": {"id": request_id, "api_id": api}, "status": {"code": code}}}})
+            "header": {"identity": {"id": request_id, "api_id": api}, "status": {"code": code}},
+            "data": data}})
 
     def last_id(self):
         return self.transport.pub_sub.publish_without_callback.call_args.args[1]["header"]["identity"]["id"]
@@ -41,6 +44,8 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.transport.send(command)
         request_id = self.last_id()
         payload = self.transport.pub_sub.publish_without_callback.call_args.args[1]
+        self.assertEqual(self.transport.pub_sub.publish_without_callback.call_args.args[0],
+                         "rt/api/sport/request")
         self.assertEqual(json.loads(payload["parameter"]), {"x": 0.3, "y": -0.3, "z": 0.5})
         self.transport._on_message(self.reply(request_id))
         self.assertFalse(self.transport.pending)
@@ -50,6 +55,39 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "accepted")
         self.assertGreaterEqual(result["duration_ms"], 0)
         self.failure.assert_not_called()
+
+    async def test_mode_query_accepts_robot_response_topic_and_json_string(self):
+        future = self.transport.send(Command("Consultar"), wait_response=True)
+        request_id = self.last_id()
+        self.assertEqual(self.transport.pub_sub.publish_without_callback.call_args.args[0],
+                         "rt/api/motion_switcher/request")
+        self.transport._on_message(self.reply(request_id, api=1001,
+            topic="rt/api/motion_switcher/response", data='{"form":"0","name":"mcf"}'))
+        response = await asyncio.wait_for(future, 0.1)
+        self.assertEqual(json.loads(response["data"]["data"])["name"], "mcf")
+        self.assertFalse(self.transport.pending)
+        self.failure.assert_not_called()
+
+    async def test_mcf_routes_supported_controls_using_driver_table(self):
+        self.transport.set_motion_mode("mcf")
+        for name in ("Move", "StandUp", "BalanceStand", "StandDown", "RecoveryStand", "Hello", "Damp"):
+            self.transport.send(Command(name))
+            args = self.transport.pub_sub.publish_without_callback.call_args.args
+            self.assertEqual(args[0], "rt/api/sport/request")
+            self.assertEqual(args[1]["header"]["identity"]["api_id"], SPORT_CMD_MCF[name])
+
+    async def test_balance_reply_must_confirm_sport_api_1002_and_exposes_rejection_code(self):
+        self.transport.set_motion_mode("mcf")
+        future = self.transport.send(Command("BalanceStand"), wait_response=True)
+        request_id = self.last_id()
+        self.transport._on_message(self.reply(request_id, api=1002, code=-1,
+                                             topic="rt/api/motion_switcher/response"))
+        self.assertFalse(future.done())
+        self.transport._on_message(self.reply(request_id, api=1002, code=-1))
+        self.assertIsNone(await future)
+        record = self.records[-1]
+        self.assertEqual(record["extra"]["code"], -1)
+        self.assertIn("código -1", record["message"])
 
     async def test_timeout_then_late_response_without_cancelled_sdk_future(self):
         command = Command("StandUp")
@@ -73,8 +111,19 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_unrelated_topic_cannot_complete_request(self):
         self.transport.send(Command.move(0.3))
         request_id = self.last_id()
-        self.transport._on_message(self.reply(request_id, topic="other"))
-        self.assertIn(request_id, self.transport.pending)
+        for topic in ("other", "rt/api/motion_switcher/response", "rt/api/sport/request"):
+            self.transport._on_message(self.reply(request_id, topic=topic))
+            self.assertIn(request_id, self.transport.pending)
+
+    async def test_late_response_with_wrong_topic_does_not_consume_expired_request(self):
+        self.transport.send(Command("StandUp"))
+        request_id = self.last_id()
+        self.transport.pending[request_id].started -= 0.1
+        self.transport.tick()
+        self.transport._on_message(self.reply(request_id, api=1004, topic="other"))
+        self.assertIn(request_id, self.transport.expired)
+        self.transport._on_message(self.reply(request_id, api=1004))
+        self.assertNotIn(request_id, self.transport.expired)
 
     async def test_closed_channel_and_network_backpressure(self):
         self.channel.readyState = "closed"
@@ -117,6 +166,27 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record["extra"]["event"], "robot_error")
         self.assertEqual(record["extra"]["response"], message)
         self.assertEqual(record["level"].name, "WARNING")
+
+    async def test_motor_fault_snapshot_during_connect_is_captured_before_connect_returns(self):
+        from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection
+
+        listeners = {}
+        channel = SimpleNamespace(readyState="open", on=Mock(side_effect=lambda name, cb: listeners.update({name: cb})))
+        pub_sub = SimpleNamespace(channel=channel)
+
+        async def connect(connection):
+            connection.datachannel = SimpleNamespace(pub_sub=pub_sub)
+            connection.video = SimpleNamespace(add_track_callback=Mock(), switchVideoChannel=Mock())
+            connection.pc = SimpleNamespace(localDescription=SimpleNamespace(sdp="offer", type="offer"),
+                                            getReceivers=lambda: [])
+            await connection.get_answer_from_local_peer(connection.pc, "192.168.12.1")
+            listeners["message"](json.dumps({"type": "errors", "data": [[123, 306, 16], [123, 309, 4]]}))
+
+        with patch.object(UnitreeWebRTCConnection, "connect", connect), patch(
+                "foto_webrtc.transport.asyncio.to_thread", new=AsyncMock(return_value="answer")):
+            await self.transport.connect()
+        self.assertEqual([fault.source for fault in self.transport.faults], [306, 309])
+        channel.on.assert_called_once()
 
     async def test_video_disable_failure_does_not_skip_disconnect_or_pending_cleanup(self):
         self.transport.connection = SimpleNamespace(video=SimpleNamespace(

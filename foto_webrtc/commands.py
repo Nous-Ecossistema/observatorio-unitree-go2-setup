@@ -9,6 +9,12 @@ from .models import Command, InputSnapshot, RobotState
 from .workers import Worker
 
 
+MOVEMENT_KEYS = {key: key for key in "wsadqe"} | {
+    "up": "w", "down": "s", "left": "q", "right": "e",
+    "turn_left": "q", "turn_right": "e",
+}
+
+
 class LocomotionWorker(Worker):
     def __init__(self, config, stop_event, inputs, states, mailbox):
         super().__init__("go2-locomotion", stop_event)
@@ -26,9 +32,9 @@ class LocomotionWorker(Worker):
             now = time.monotonic()
             generation = self.mailbox.generation
             fresh = now - snapshot.timestamp < self.config.input_timeout
-            permitted = state.connected and state.allowed and not state.busy
+            permitted = state.connected and state.allowed and not state.busy and not state.blocking_faults
             current = snapshot.generation == generation
-            keys = snapshot.keys & {"w", "s", "a", "d", "q", "e"}
+            keys = {MOVEMENT_KEYS[key] for key in snapshot.keys if key in MOVEMENT_KEYS}
             if keys and not permitted and not denied:
                 logger.bind(component="commands", event="movement_inhibited",
                             mode=state.mode, busy=state.busy, connected=state.connected,
@@ -36,11 +42,16 @@ class LocomotionWorker(Worker):
             denied = bool(keys) and not permitted
             x = self.config.linear_gain * (("w" in keys) - ("s" in keys))
             y = self.config.linear_gain * (("a" in keys) - ("d" in keys))
-            z = self.config.angular_gain * (("q" in keys) - ("e" in keys))
+            angular_gain = self.config.angular_gain if snapshot.angular_gain is None else snapshot.angular_gain
+            z = angular_gain * (("q" in keys) - ("e" in keys))
             moving = permitted and fresh and current and bool(x or y or z)
             if moving:
                 self.mailbox.move(Command.move(x, y, z, generation=generation,
                     valid_until=snapshot.timestamp + self.config.input_timeout))
+                if not was_moving:
+                    logger.bind(component="commands", event="movement_started", keys=sorted(keys),
+                                parameters={"x": x, "y": y, "z": z}, generation=generation
+                                ).info("Locomoção solicitada pelo teclado: x={}, y={}, z={}", x, y, z)
             elif was_moving:
                 # Soltar tecla / perder heartbeat zera uma vez; não envia Move
                 # continuamente durante uma postura, deitado ou amortecido.

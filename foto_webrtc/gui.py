@@ -2,35 +2,144 @@
 
 import tkinter as tk
 
+from .commands import MOVEMENT_KEYS
 from .models import ConnectionState
 
 
 class JanelaCamera:
+    RELEASE_DELAY_MS = 40
+
     def __init__(self, title="Camera Go2 - Teleop"):
         self.root = tk.Tk()
         self.root.title(title)
-        self.root.geometry("960x640")
+        self.root.geometry("1100x760")
+        self.root.minsize(720, 540)
+        self.root.configure(bg="#111827")
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=1)
         self.pressionadas = set()
         self.solturas = {}
         self.imagem = None
+        self.photo_window = None
+        self.photo_image = None
         self.fechada = False
         self.on_action = lambda action: None
         self.on_close = lambda: self.root.quit()
         self.status = tk.StringVar(value="Conectando ao Go2...")
-        tk.Label(self.root, textvariable=self.status).pack()
-        self.reconnect_button = tk.Button(self.root, text="Reconectar (F5)",
-                                         command=lambda: self.on_action("Reconectar"), state="disabled")
-        self.reconnect_button.pack()
-        self.preview = tk.Label(self.root, bg="#202020", fg="white", text="Aguardando imagens da câmera...")
-        self.preview.pack(fill="both", expand=True)
-        tk.Label(self.root, text="Segure W/S: frente/trás | A/D: lateral | Q/E: giro | Espaço: parar\n"
-                 "U: levantar | J: deitar | R: recuperar | H: aceno | K: amortecer | M: modo\n"
-                 "P: foto | V: vídeo | F5: reconectar | Esc: sair").pack()
+        self.connection = tk.StringVar(value="GO2  /  Conectando")
+        self.movement = tk.StringVar(value="AGUARDANDO CONEXÃO")
+        self.media_status = tk.StringVar(value="Câmera: aguardando imagens")
+        self.angular_gain = tk.DoubleVar(value=0.5)
+        self.drive_enabled = False
+        header = tk.Frame(self.root, bg="#111827", padx=16, pady=12)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        tk.Label(header, textvariable=self.connection, bg="#111827", fg="#e5e7eb",
+                 font=("TkDefaultFont", 12, "bold"), anchor="w").grid(row=0, column=0, sticky="ew")
+        self.movement_label = tk.Label(header, textvariable=self.movement, bg="#374151",
+                                       fg="#fcd34d", padx=12, pady=6,
+                                       font=("TkDefaultFont", 10, "bold"))
+        self.movement_label.grid(row=0, column=1, rowspan=2, padx=(12, 0))
+        self.detail_label = tk.Label(header, textvariable=self.status, bg="#111827", fg="#9ca3af",
+                                     anchor="w", justify="left", wraplength=500)
+        self.detail_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        header.bind("<Configure>", lambda event: self.detail_label.configure(
+            wraplength=max(180, event.width - self.movement_label.winfo_reqwidth() - 50)))
+
+        # Canvas não muda o tamanho solicitado ao receber uma imagem nova.
+        # Assim o vídeo não empurra os controles nem realimenta o redimensionamento.
+        self.preview = tk.Canvas(self.root, bg="#080d16", highlightthickness=0, width=1, height=1)
+        self.preview.grid(row=1, column=0, sticky="nsew", padx=12)
+        self.preview_image = self.preview.create_image(0, 0, anchor="center", state="hidden")
+        self.preview_message = self.preview.create_text(0, 0, fill="#94a3b8",
+            text="Aguardando imagens da câmera…", font=("TkDefaultFont", 13), justify="center")
+        self.preview.bind("<Configure>", self._enquadrar)
+
+        footer = tk.Frame(self.root, bg="#111827", padx=12, pady=10)
+        footer.grid(row=2, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        self.media_label = tk.Label(footer, textvariable=self.media_status, bg="#111827", fg="#9ca3af",
+                                   anchor="w", justify="left", wraplength=680)
+        self.media_label.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        footer.bind("<Configure>", lambda event: self.media_label.configure(wraplength=max(1, event.width - 24)))
+        driving = tk.Frame(footer, bg="#111827")
+        driving.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        driving.columnconfigure(0, weight=1)
+        driving.columnconfigure(1, weight=2)
+        driving.columnconfigure(2, weight=1)
+        self.turn_buttons = []
+        for column, text, key in ((0, "↶ Virar à esquerda", "turn_left"),
+                                  (2, "Virar à direita ↷", "turn_right")):
+            button = tk.Button(driving, text=text, takefocus=False, state="disabled",
+                bg="#164e63", fg="white", activebackground="#0e7490", activeforeground="white",
+                relief="flat", padx=8, pady=12, cursor="hand2")
+            button.grid(row=0, column=column, sticky="ew", padx=3)
+            button.bind("<ButtonPress-1>", lambda event, key=key: self._iniciar_giro(key))
+            button.bind("<ButtonRelease-1>", lambda event, key=key: self._parar_giro(key))
+            button.bind("<Leave>", lambda event, key=key: self._parar_giro(key))
+            self.turn_buttons.append(button)
+        self.turn_speed = tk.Scale(driving, label="Velocidade do giro · segure os botões para virar",
+            variable=self.angular_gain, from_=0.1, to=1.0, resolution=0.05, orient="horizontal",
+            bg="#111827", fg="#cbd5e1", highlightthickness=0, troughcolor="#374151",
+            activebackground="#0e7490", takefocus=False, borderwidth=0)
+        self.turn_speed.grid(row=0, column=1, sticky="ew", padx=12)
+        self.turn_speed.bind("<ButtonRelease-1>", lambda event: self.root.focus_set())
+        posture = tk.Frame(footer, bg="#111827")
+        posture.grid(row=2, column=0, sticky="ew")
+        self.robot_buttons = []
+        for column, (text, action) in enumerate((("Levantar · U", "StandUp"),
+                ("Recuperar · R", "RecoveryStand"), ("Deitar · J", "StandDown"),
+                ("Aceno · H", "Hello"), ("Amortecer · K", "Damp"), ("Equilibrar · B", "BalanceStand"))):
+            posture.columnconfigure(column, weight=1, uniform="actions")
+            button = self._botao(posture, text, action)
+            button.grid(row=0, column=column, sticky="ew", padx=3)
+            button.configure(state="disabled")
+            self.robot_buttons.append(button)
+        tools = tk.Frame(footer, bg="#111827")
+        tools.grid(row=3, column=0, sticky="ew", pady=8)
+        for column, (text, action) in enumerate((("Foto · P", "Foto"), ("Vídeo · V", "Video"), ("Modo · M", "Consultar"),
+                                                ("Reconectar · F5", "Reconectar"), ("PARAR · Espaço", "Parar"))):
+            tools.columnconfigure(column, weight=1, uniform="tools")
+            button = self._botao(tools, text, action)
+            button.grid(row=0, column=column, sticky="ew", padx=3)
+            if action == "Reconectar":
+                self.reconnect_button = button
+                button.configure(state="disabled")
+            elif action == "Consultar":
+                self.mode_button = button
+                self.robot_buttons.append(button)
+                button.configure(state="disabled")
+            elif action == "Parar":
+                button.configure(bg="#b91c1c", fg="white", activebackground="#dc2626")
+        tk.Label(footer, text="Segure ↑/↓ ou W/S: frente/trás   •   ←/→ ou Q/E: virar   •   A/D: lateral\n"
+                 "Aguarde PRONTO PARA ANDAR antes de usar as setas.   Esc: sair",
+                 bg="#111827", fg="#cbd5e1", justify="center").grid(row=4, column=0, sticky="ew")
         self.root.bind("<KeyPress>", self._pressionar)
         self.root.bind("<KeyRelease>", self._soltar)
         self.root.bind("<FocusOut>", self._perder_foco)
         self.root.protocol("WM_DELETE_WINDOW", self.fechar)
         self.root.after(0, self.root.focus_force)
+
+    def _botao(self, parent, text, action):
+        return tk.Button(parent, text=text, command=lambda: self._acionar(action), takefocus=False,
+                         bg="#273449", fg="#f1f5f9", activebackground="#3b4d68", activeforeground="white",
+                         relief="flat", padx=6, pady=8, cursor="hand2")
+
+    def _acionar(self, action):
+        if action == "Parar":
+            self.pressionadas.clear()
+        elif action in ("StandUp", "StandDown", "RecoveryStand", "BalanceStand", "Hello", "Damp", "Consultar"):
+            self.pressionadas.difference_update(MOVEMENT_KEYS)
+        self.on_action(action)
+
+    def _iniciar_giro(self, key):
+        if not self.fechada and self.drive_enabled:
+            self.pressionadas.add(key)
+        return "break"
+
+    def _parar_giro(self, key):
+        self.pressionadas.discard(key)
+        return "break"
 
     def _pressionar(self, evento):
         if self.fechada:
@@ -46,21 +155,20 @@ class JanelaCamera:
                 self.pressionadas.add(tecla)
                 self.on_action("Reconectar")
         elif tecla == "space":
-            self.pressionadas.clear()
-            self.on_action("Parar")
+            self._acionar("Parar")
         elif tecla not in self.pressionadas:
             self.pressionadas.add(tecla)
-            actions = {"u": "StandUp", "j": "StandDown", "r": "RecoveryStand",
+            actions = {"u": "StandUp", "j": "StandDown", "r": "RecoveryStand", "b": "BalanceStand",
                        "h": "Hello", "k": "Damp", "m": "Consultar", "p": "Foto", "v": "Video"}
             if tecla in actions:
-                if tecla in "ujrhkm":
-                    self.pressionadas.difference_update("wsadqe")
-                self.on_action(actions[tecla])
+                self._acionar(actions[tecla])
 
     def _soltar(self, evento):
         tecla = evento.keysym.lower()
         if tecla not in self.solturas:
-            self.solturas[tecla] = self.root.after_idle(self._confirmar_soltura, tecla)
+            # No X11 o autorepeat pode emitir Release/Press em eventos separados.
+            # after_idle pode confirmar a soltura entre os dois e repetir posturas.
+            self.solturas[tecla] = self.root.after(self.RELEASE_DELAY_MS, self._confirmar_soltura, tecla)
 
     def _confirmar_soltura(self, tecla):
         self.solturas.pop(tecla, None)
@@ -72,7 +180,57 @@ class JanelaCamera:
 
     def mostrar(self, preview):
         self.imagem = tk.PhotoImage(data=preview.ppm, format="PPM")
-        self.preview.configure(image=self.imagem, text="")
+        self.preview.itemconfigure(self.preview_image, image=self.imagem, state="normal")
+        self.preview.itemconfigure(self.preview_message, state="hidden")
+
+    def mostrar_foto(self, photo):
+        if self.photo_window is None or not self.photo_window.winfo_exists():
+            self.photo_window = tk.Toplevel(self.root)
+            self.photo_window.configure(bg="#111827")
+            self.photo_label = tk.Label(self.photo_window, bg="#080d16")
+            self.photo_label.pack(padx=10, pady=10)
+            self.photo_path = tk.Label(self.photo_window, bg="#111827", fg="#e5e7eb",
+                                       wraplength=900, justify="left")
+            self.photo_path.pack(padx=10, pady=(0, 10))
+            tk.Button(self.photo_window, text="Fechar foto", command=self.photo_window.destroy).pack(pady=(0, 10))
+            self.photo_window.bind("<Escape>", lambda event: self.photo_window.destroy())
+        self.photo_window.title("Go2 - Foto corrigida" if photo.original_path else "Go2 - Foto original")
+        self.photo_image = tk.PhotoImage(master=self.photo_window, data=photo.ppm, format="PPM")
+        self.photo_label.configure(image=self.photo_image)
+        details = f"Foto salva: {photo.path}"
+        if photo.original_path:
+            details += f"\nOriginal salvo: {photo.original_path}"
+        self.photo_path.configure(text=details)
+        self.photo_window.lift()
+
+    def _enquadrar(self, evento):
+        for item in (self.preview_image, self.preview_message):
+            self.preview.coords(item, evento.width / 2, evento.height / 2)
+
+    def atualizar_estado(self, robot, camera, video):
+        self.connection.set(f"GO2  /  {robot.connection_state.value}  ·  Modo {robot.mode or '—'}")
+        self.status.set(robot.message)
+        self.media_status.set(f"Câmera: {camera}   |   {video.message}")
+        if not robot.connected:
+            message, color = "SEM CONEXÃO", "#fca5a5"
+        elif robot.blocking_faults:
+            message, color = "FALHA ATIVA NO ROBÔ", "#fca5a5"
+        elif robot.busy:
+            message, color = "AÇÃO EM ANDAMENTO", "#fcd34d"
+        elif robot.allowed:
+            message, color = "PRONTO PARA ANDAR", "#6ee7b7"
+        else:
+            message, color = "LEVANTAR (U) PARA ANDAR", "#fcd34d"
+        self.movement.set(message)
+        self.movement_label.configure(fg=color)
+        self.drive_enabled = robot.connected and robot.allowed and not robot.busy and not robot.blocking_faults
+        if not self.drive_enabled:
+            self.pressionadas.difference_update(("turn_left", "turn_right"))
+        for button in self.turn_buttons:
+            button.configure(state="normal" if self.drive_enabled else "disabled")
+        for button in self.robot_buttons:
+            enabled = robot.connected and not robot.busy and (not robot.blocking_faults or button is self.mode_button)
+            button.configure(state="normal" if enabled else "disabled")
 
     def set_connection_state(self, state):
         reconnect = state in (ConnectionState.DISCONNECTED, ConnectionState.ERROR)

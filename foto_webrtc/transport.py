@@ -16,6 +16,7 @@ from typing import Protocol
 from loguru import logger
 
 from .channels import put_latest
+from .faults import FaultTracker
 
 
 def is_recoverable_connection_error(error):
@@ -34,6 +35,7 @@ def is_recoverable_connection_error(error):
 
 class RobotTransport(Protocol):
     async def connect(self): ...
+    def set_motion_mode(self, mode): ...
     def send(self, command, wait_response=False): ...
     def tick(self): ...
     async def disconnect(self): ...
@@ -46,6 +48,12 @@ class Pending:
     api_id: int
     started: float
     future: object = None
+
+    @property
+    def response_topic(self):
+        if self.topic.endswith("/request"):
+            return self.topic.removesuffix("/request") + "/response"
+        return self.topic
 
 
 class WebRTCTransport:
@@ -62,17 +70,35 @@ class WebRTCTransport:
         self.ids = count(int(time.time() * 1000) % 2147483648)
         self.log = logger.bind(component="rtc")
         self.seen_tracks = set()
+        self.motion_mode = None
+        self.fault_tracker = FaultTracker()
+        self._listening = False
+
+    @property
+    def faults(self):
+        return self.fault_tracker.faults
+
+    def _attach_channel(self):
+        self.pub_sub = self.connection.datachannel.pub_sub
+        self.channel = self.pub_sub.channel
+        if not self._listening:
+            self.channel.on("message", self._on_message)
+            self._listening = True
 
     async def connect(self):
         from importlib.metadata import version
         from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
-        from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
+        from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
         from .signaling import exchange_local_sdp
 
         request_timeout = self.config.request_timeout
+        transport = self
 
         class LocalConnection(UnitreeWebRTCConnection):
             async def get_answer_from_local_peer(self, pc, ip):
+                # O canal já existe, mas o SDP ainda não foi enviado: captura
+                # inclusive o snapshot de falhas emitido durante a validação.
+                transport._attach_channel()
                 description = pc.localDescription
                 payload = json.dumps({"id": "", "sdp": description.sdp,
                                       "type": description.type, "token": self.token})
@@ -80,6 +106,7 @@ class WebRTCTransport:
                                                self.aes_128_key, min(5.0, request_timeout))
 
         self.topics, self.apis = RTC_TOPIC, SPORT_CMD
+        self.mcf_apis = SPORT_CMD_MCF
         import os
 
         self.connection = LocalConnection(WebRTCConnectionMethod.LocalAP,
@@ -88,11 +115,9 @@ class WebRTCTransport:
         self.log.bind(event="connecting", driver_version=version("unitree-webrtc-connect"),
                       connection_method="LocalAP").info("Conectando ao Go2 via Wi-Fi AP")
         await asyncio.wait_for(self.connection.connect(), self.config.connect_timeout)
-        self.pub_sub = self.connection.datachannel.pub_sub
-        self.channel = self.pub_sub.channel
+        self._attach_channel()
         if self.channel.readyState != "open":
             raise ConnectionError("Canal WebRTC não abriu")
-        self.channel.on("message", self._on_message)
         self.connection.video.add_track_callback(self._on_track)
         # O driver pode receber a trilha durante connect(), antes do registro
         # do callback. Recolhe também os receivers já negociados.
@@ -117,13 +142,18 @@ class WebRTCTransport:
             return self.topics["MOTION_SWITCHER"], 1001
         if command.name == "ModoNormal":
             return self.topics["MOTION_SWITCHER"], 1002
-        return self.topics["SPORT_MOD"], self.apis[command.name]
+        apis = self.mcf_apis if self.motion_mode == "mcf" else self.apis
+        return self.topics["SPORT_MOD"], apis[command.name]
+
+    def set_motion_mode(self, mode):
+        self.motion_mode = mode
+        self.log.bind(event="motion_mode_selected", mode=mode).info("Modo de movimento: {}", mode)
 
     def _log(self, pending, request_id, **extra):
         return self.log.bind(command_id=pending.command.command_id, request_id=request_id,
             parent_command_id=pending.command.parent_command_id,
             command=pending.command.name, parameters=pending.command.parameter,
-            topic=pending.topic, api_id=pending.api_id, **extra)
+            topic=pending.topic, response_topic=pending.response_topic, api_id=pending.api_id, **extra)
 
     def send(self, command, wait_response=False):
         if self.channel.readyState != "open":
@@ -164,7 +194,7 @@ class WebRTCTransport:
             if not isinstance(response, dict):
                 return
             if response.get("type") in ("errors", "add_error", "rm_error"):
-                # O SDK só imprime estes avisos; preserva-os também em JSONL.
+                self.fault_tracker.update(response)
                 self.log.bind(event="robot_error", response=response).log(
                     "WARNING" if response.get("data") and response["type"] != "rm_error" else "INFO",
                     "Diagnóstico do robô: {}", response["type"])
@@ -175,13 +205,16 @@ class WebRTCTransport:
             request_id = identity.get("id")
             pending = self.pending.get(request_id)
             if pending is None:
-                pending = self.expired.pop(request_id, None)
-                if pending is not None:
+                pending = self.expired.get(request_id)
+                if pending is not None and response.get("topic") == pending.response_topic:
+                    self.expired.pop(request_id)
                     self._log(pending, request_id, event="late_response", response=response,
                               duration_ms=(time.monotonic() - pending.started) * 1000
                               ).warning("Resposta tardia; estado de locomoção permanece suspenso")
                 return
-            if response.get("topic") != pending.topic:
+            if response.get("topic") != pending.response_topic:
+                self._log(pending, request_id, event="unexpected_response_topic",
+                          received_topic=response.get("topic")).debug("Resposta em tópico inesperado")
                 return  # outro tópico não pode completar este pedido
             self.pending.pop(request_id)
             code = response.get("data", {}).get("header", {}).get("status", {}).get("code")
@@ -197,11 +230,12 @@ class WebRTCTransport:
 
     def _finish(self, request_id, pending, status, response):
         duration = (time.monotonic() - pending.started) * 1000
+        code = response.get("data", {}).get("header", {}).get("status", {}).get("code") if response else None
         log = self._log(pending, request_id, event="command_result", status=status,
-                        response=response, duration_ms=duration)
+                        response=response, duration_ms=duration, code=code)
         log.log("DEBUG" if status == "accepted" and pending.command.name == "Move" else
                 "INFO" if status == "accepted" else "WARNING",
-                "Resultado de {}: {} ({:.1f} ms)", pending.command.name, status, duration)
+                "Resultado de {}: {} (código {}; {:.1f} ms)", pending.command.name, status, code, duration)
         if pending.future is not None and not pending.future.done():
             pending.future.set_result(response if status == "accepted" else None)
         if status in ("timeout", "rejected", "malformed"):
@@ -238,4 +272,6 @@ class WebRTCTransport:
                     self._finish(request_id, pending, "cancelled", None)
                 self.pending.clear()
                 self.expired.clear()
+                self.fault_tracker = FaultTracker()
+                self._listening = False
                 self.log.bind(event="disconnected").info("WebRTC desconectado")

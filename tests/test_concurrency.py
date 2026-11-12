@@ -73,6 +73,9 @@ class FakeTransport:
         await asyncio.sleep(self.connect_delay)
         put_latest(self.tracks, FakeTrack())
 
+    def set_motion_mode(self, mode):
+        self.motion_mode = mode
+
     def send(self, command, wait_response=False):
         self.calls.append((command, threading.current_thread().name))
         if command.name == "Move" and any(command.parameter.values()) and self.rejected_move:
@@ -109,6 +112,22 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(queue.qsize(), 1)
         self.assertEqual(get_latest(queue), 9999)
 
+    def test_motor_fault_blocks_velocity_even_if_permission_is_true(self):
+        from foto_webrtc.faults import RobotFault
+
+        config = Config(publish_hz=100)
+        stop, inputs, states, bus = threading.Event(), Queue(1), Queue(1), CommandMailbox()
+        put_latest(inputs, InputSnapshot(frozenset({"up", "left"})))
+        put_latest(states, RobotState(connected=True, allowed=True, faults=(RobotFault(123, 306, 16),)))
+        worker = LocomotionWorker(config, stop, inputs, states, bus)
+        worker.start()
+        try:
+            time.sleep(0.04)
+            self.assertIsNone(bus.take())
+        finally:
+            stop.set()
+            worker.join(1)
+
     def test_input_watchdog_stops_without_new_gui_heartbeat(self):
         config = Config(publish_hz=100, input_timeout=0.04)
         stop, inputs, states, bus = threading.Event(), Queue(1), Queue(1), CommandMailbox()
@@ -126,13 +145,53 @@ class QueueTests(unittest.TestCase):
                     break
                 time.sleep(0.002)
             self.assertIsNotNone(moving)
-            self.assertEqual(moving.parameter, {"x": 0.3, "y": 0.3, "z": 0.5})
+            self.assertEqual(moving.parameter, {"x": 0.5, "y": 0.5, "z": 0.5})
             time.sleep(0.07)
             self.assertEqual(bus.take().parameter, {"x": 0.0, "y": 0.0, "z": 0.0})
         finally:
             stop.set()
             worker.join(1)
         self.assertFalse(worker.is_alive())
+
+    def test_arrow_keys_move_and_aliases_do_not_double_speed(self):
+        config = Config(publish_hz=100)
+        for keys, expected in [
+            ({"up", "w"}, (0.5, 0, 0)), ({"down"}, (-0.5, 0, 0)),
+            ({"left", "q"}, (0, 0, 0.5)), ({"right", "e"}, (0, 0, -0.5)),
+            ({"a"}, (0, 0.5, 0)), ({"d"}, (0, -0.5, 0)),
+            ({"up", "right"}, (0.5, 0, -0.5)),
+            ({"up", "right", "q"}, (0.5, 0, 0)),
+            ({"turn_left"}, (0, 0, 0.5)), ({"turn_right"}, (0, 0, -0.5)),
+        ]:
+            with self.subTest(keys=keys):
+                stop, inputs, states, bus = threading.Event(), Queue(1), Queue(1), CommandMailbox()
+                put_latest(inputs, InputSnapshot(frozenset(keys)))
+                put_latest(states, RobotState(connected=True, allowed=True))
+                worker = LocomotionWorker(config, stop, inputs, states, bus)
+                worker.start()
+                try:
+                    deadline = time.monotonic() + 1
+                    command = None
+                    while time.monotonic() < deadline:
+                        command = bus.take()
+                        if command is not None:
+                            break
+                        time.sleep(0.002)
+                    self.assertIsNotNone(command)
+                    self.assertEqual(command.parameter, dict(zip(("x", "y", "z"), expected)))
+                    put_latest(inputs, InputSnapshot())
+                    deadline = time.monotonic() + 1
+                    while time.monotonic() < deadline:
+                        command = bus.take()
+                        if command is not None and not any(command.parameter.values()):
+                            break
+                        time.sleep(0.002)
+                    self.assertIsNotNone(command)
+                    self.assertFalse(any(command.parameter.values()))
+                finally:
+                    stop.set()
+                    worker.join(1)
+                self.assertFalse(worker.is_alive())
 
 
 class LifecycleTests(unittest.TestCase):
@@ -165,7 +224,7 @@ class LifecycleTests(unittest.TestCase):
         self.window.root.after(230, self.window.on_close)
         app.run()
         transport = FakeTransport.instances[0]
-        self.assertTrue(any(c.name == "Move" and c.parameter.get("x") == 0.3 for c, _ in transport.calls))
+        self.assertTrue(any(c.name == "Move" and c.parameter.get("x") == 0.5 for c, _ in transport.calls))
         self.assertEqual({name for _, name in transport.calls}, {"go2-rtc"})
         self.assertFalse(any(transport.calls[-1][0].parameter.values()))
         self.assertTrue(self.window.preview_threads)
@@ -183,6 +242,73 @@ class LifecycleTests(unittest.TestCase):
         nonzero = [i for i, c in enumerate(calls) if c.name == "Move" and any(c.parameter.values())]
         self.assertEqual(len(nonzero), 1)
         self.assertFalse(any(calls[nonzero[0] + 1].parameter.values()))
+
+    def test_busy_action_is_rejected_without_sending_extra_stop_or_changing_generation(self):
+        from dataclasses import replace
+
+        app = Application(self.config, self.window, FakeTransport)
+        app.robot.ready.set()
+        app.robot.state = replace(app.robot.state, connected=True, busy=True)
+        generation = app.mailbox.generation
+        self.assertFalse(app.action("Hello"))
+        self.assertEqual(app.mailbox.generation, generation)
+        self.assertIsNone(app.mailbox.take())
+
+    def test_second_action_is_rejected_while_first_is_still_queued(self):
+        from dataclasses import replace
+
+        app = Application(self.config, self.window, FakeTransport)
+        app.robot.ready.set()
+        app.robot.state = replace(app.robot.state, connected=True)
+        self.assertTrue(app.action("StandUp"))
+        generation = app.mailbox.generation
+        self.assertFalse(app.action("Hello"))
+        self.assertEqual(app.mailbox.generation, generation)
+        self.assertEqual(app.mailbox.actions.qsize(), 1)
+        self.assertEqual(app.mailbox.actions.get_nowait().name, "StandUp")
+
+    def test_arrow_drives_after_posture_finishes_and_stops_on_release(self):
+        app = Application(self.config, self.window, FakeTransport)
+
+        def drive_when_ready():
+            if not app.robot.state.allowed:
+                self.window.root.after(10, drive_when_ready)
+                return
+            self.window.pressionadas.add("up")
+            self.window.root.after(110, self.window.pressionadas.clear)
+            self.window.root.after(220, self.window.on_close)
+
+        def stand_when_ready():
+            if not app.robot.ready.is_set() or app.robot.state.busy:
+                self.window.root.after(10, stand_when_ready)
+                return
+            if not app.action("StandUp"):
+                self.window.root.after(10, stand_when_ready)
+                return
+            self.window.root.after(10, drive_when_ready)
+
+        self.window.root.after(10, stand_when_ready)
+        self.window.root.after(2000, self.window.on_close)
+        app.run()
+        calls = [command for command, _ in FakeTransport.instances[0].calls]
+        moving = [i for i, c in enumerate(calls) if c.name == "Move" and c.parameter.get("x") == 0.5]
+        self.assertTrue(moving)
+        self.assertTrue(any(c.name == "Move" and not any(c.parameter.values()) for c in calls[moving[-1] + 1:]))
+
+    def test_turn_speed_changes_reach_movement_and_release_stops(self):
+        gain = [0.5]
+        self.window.angular_gain = SimpleNamespace(get=lambda: gain[0], set=lambda value: gain.__setitem__(0, value))
+        app = Application(self.config, self.window, FakeTransport)
+        self.window.root.after(60, lambda: app.action("StandUp"))
+        self.window.root.after(130, lambda: self.window.pressionadas.add("left"))
+        self.window.root.after(230, lambda: gain.__setitem__(0, 0.8))
+        self.window.root.after(330, lambda: self.window.pressionadas.clear())
+        self.window.root.after(450, self.window.on_close)
+        app.run()
+        moves = [c.parameter for c, _ in FakeTransport.instances[0].calls if c.name == "Move"]
+        self.assertIn({"x": 0, "y": 0, "z": 0.5}, moves)
+        self.assertIn({"x": 0, "y": 0, "z": 0.8}, moves)
+        self.assertEqual(moves[-1], {"x": 0, "y": 0, "z": 0})
 
     def test_worker_exception_stops_application_and_closes_resources(self):
         class BrokenTransport(FakeTransport):

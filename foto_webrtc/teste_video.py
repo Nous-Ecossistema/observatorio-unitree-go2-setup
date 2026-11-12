@@ -11,14 +11,15 @@ from pathlib import Path
 from loguru import logger
 
 # Mantém os ajustes e o caminho de saída usados pela aplicação original.
-GANHO_LINEAR = 0.3
+GANHO_LINEAR = 0.5
 GANHO_ANGULAR = 0.5
 PUBLICAR_HZ = 20.0
 TIMEOUT_PEDIDO_S = 5.0
-TEMPO_POSTURA_S = {"StandUp": 3.0, "StandDown": 3.0, "RecoveryStand": 5.0, "Hello": 2.0, "Damp": 0.5}
+TEMPO_POSTURA_S = {"StandUp": 3.0, "BalanceStand": 1.0, "StandDown": 3.0, "RecoveryStand": 5.0, "Hello": 2.0, "Damp": 0.5}
 LIMITE_FRAME_ANTIGO_S = 2.0
 JANELA = "Camera Go2 - Teleop"
 PASTA_SAIDA = Path(__file__).resolve().parent / "capturas_go2"
+CALIBRACAO = Path(__file__).resolve().parent.parent / "calibracoes_go2/20261021_180527_uaywafbe/calibracao.npz"
 
 
 def JanelaCamera():
@@ -35,10 +36,18 @@ def cli():
     parser = argparse.ArgumentParser(description="Câmera e teleoperação do Go2 via Wi-Fi AP")
     parser.add_argument("--testar-janela", action="store_true", help="abre apenas a janela, sem conectar nem enviar comandos")
     parser.add_argument("--pasta-saida", type=Path, default=PASTA_SAIDA, help="diretório de fotos e vídeos")
+    parser.add_argument("--pasta-fotos", type=Path,
+                        help="pasta com originais/ e corrigidas/; padrão: fotos/ na raiz do projeto")
     parser.add_argument("--pasta-logs", type=Path, default=Path("logs"), help="diretório dos logs JSONL")
     parser.add_argument("--nivel-log", choices=("DEBUG", "INFO", "WARNING", "ERROR"), default="INFO", help="nível do console (arquivo mantém DEBUG)")
     parser.add_argument("--timeout-pedido", type=float, default=TIMEOUT_PEDIDO_S, help="timeout de resposta da API em segundos")
     parser.add_argument("--publicar-hz", type=float, default=PUBLICAR_HZ, help="frequência de comandos Move")
+    correction = parser.add_mutually_exclusive_group()
+    correction.add_argument("--calibracao", type=Path, default=CALIBRACAO,
+                            help="NPZ pinhole para corrigir prévia, fotos e vídeos; padrão: calibração de 21/10/2026")
+    correction.add_argument("--sem-correcao", action="store_true", help="usa imagens originais do stream")
+    parser.add_argument("--alpha-correcao", type=float, default=0.0,
+                        help="enquadramento de 0 a 1; padrão: 0 (menor campo de visão)")
     args = parser.parse_args()
     # Também suporta o caminho histórico sem depender de instalação editável.
     if not __package__:
@@ -50,6 +59,9 @@ def cli():
 
     try:
         config = Config(output_dir=args.pasta_saida, log_dir=args.pasta_logs, log_level=args.nivel_log,
+                        photo_dir=args.pasta_fotos,
+                        calibration_path=None if args.sem_correcao else args.calibracao,
+                        correction_alpha=args.alpha_correcao,
                         linear_gain=GANHO_LINEAR, angular_gain=GANHO_ANGULAR,
                         publish_hz=args.publicar_hz, request_timeout=args.timeout_pedido,
                         frame_timeout=LIMITE_FRAME_ANTIGO_S, posture_delays=tuple(TEMPO_POSTURA_S.items()))

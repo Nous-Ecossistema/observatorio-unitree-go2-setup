@@ -47,6 +47,7 @@ capturas_go2/
 captures/
 recordings/
 screenshots/
+/fotos/
 videos/
 *.avi
 *.mp4
